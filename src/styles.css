@@ -1,0 +1,281 @@
+/* ── Reset & base ─────────────────────────────────────────────────────────── */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  --bg-dark:    #0d0d1a;
+  --bg-panel:   #151525;
+  --bg-header:  #111122;
+  --border:     #2a2a4a;
+  --text:       #dde0ff;
+  --text-dim:   #7070a0;
+  --accent:     #5577ff;
+  --accent-h:   #7799ff;
+  --danger:     #ff4455;
+  --success:    #44ff88;
+  --panel-pad:  12px;
+  --radius:     6px;
+  --header-h:   44px;
+}
+
+html, body {
+  width: 100%; height: 100%; overflow: hidden;
+  font-family: 'Segoe UI', system-ui, sans-serif;
+  font-size: 13px;
+  color: var(--text);
+  background: var(--bg-dark);
+}
+
+/* ── Layout ───────────────────────────────────────────────────────────────── */
+.app-layout {
+  display: flex;
+  flex-direction: column;
+  width: 100vw;
+  height: 100vh;
+}
+
+/* ── Toolbar ──────────────────────────────────────────────────────────────── */
+.toolbar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 12px;
+  height: var(--header-h);
+  background: var(--bg-header);
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+  flex-wrap: wrap;
+}
+
+.toolbar-left { display: flex; align-items: center; }
+.toolbar-center { display: flex; align-items: center; gap: 4px; flex: 1; flex-wrap: wrap; }
+.toolbar-right { display: flex; align-items: center; gap: 6px; }
+
+.app-title {
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--accent-h);
+  white-space: nowrap;
+  margin-right: 12px;
+}
+
+/* ── Buttons ──────────────────────────────────────────────────────────────── */
+button {
+  padding: 4px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-panel);
+  color: var(--text);
+  cursor: pointer;
+  font-size: 12px;
+  transition: background 0.15s, border-color 0.15s;
+  white-space: nowrap;
+}
+button:hover { background: #1e1e3a; border-color: var(--accent); }
+button:active { background: var(--accent); color: #fff; }
+
+#btn-add-char { color: var(--success); border-color: #225533; }
+#btn-remove-char { color: var(--danger); border-color: #553322; }
+#btn-export-png { color: #ffd700; border-color: #554400; }
+
+/* ── Main area ─────────────────────────────────────────────────────────────── */
+.main-area {
+  display: flex;
+  flex: 1;
+  overflow: hidden;
+}
+
+/* ── 3D Viewport ───────────────────────────────────────────────────────────── */
+.viewport-container {
+  flex: 1;
+  position: relative;
+  overflow: hidden;
+  background: #0a0a18;
+}
+
+.viewport-container canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.viewport-hint {
+  position: absolute;
+  bottom: 8px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: rgba(0,0,0,0.55);
+  color: var(--text-dim);
+  font-size: 11px;
+  padding: 3px 10px;
+  border-radius: 20px;
+  pointer-events: none;
+}
+
+/* ── Sidebar ───────────────────────────────────────────────────────────────── */
+.sidebar {
+  width: 300px;
+  flex-shrink: 0;
+  overflow-y: auto;
+  background: var(--bg-dark);
+  border-left: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+
+/* ── Panel ─────────────────────────────────────────────────────────────────── */
+.panel {
+  padding: var(--panel-pad);
+  border-bottom: 1px solid var(--border);
+}
+
+.panel h3 {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-dim);
+  margin-bottom: 8px;
+}
+
+/* ── Setting rows ──────────────────────────────────────────────────────────── */
+.setting-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  margin-bottom: 6px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.setting-row span:first-child {
+  flex: 0 0 105px;
+  color: var(--text-dim);
+  font-size: 11px;
+}
+
+.setting-row input[type="range"] {
+  flex: 1;
+  min-width: 0;
+  accent-color: var(--accent);
+}
+
+/* Value display next to slider */
+.setting-row span:last-child:not(:first-child) {
+  flex: 0 0 36px;
+  text-align: right;
+  font-size: 10px;
+  color: var(--accent-h);
+  font-variant-numeric: tabular-nums;
+}
+
+.setting-row input[type="color"] {
+  width: 36px;
+  height: 24px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  cursor: pointer;
+  background: transparent;
+  padding: 0;
+}
+
+.setting-row select {
+  flex: 1;
+  background: var(--bg-panel);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 2px 4px;
+}
+
+.setting-row.checkbox-row {
+  flex-direction: row-reverse;
+  justify-content: flex-end;
+  gap: 8px;
+  cursor: pointer;
+}
+.setting-row.checkbox-row input[type="checkbox"] {
+  accent-color: var(--accent);
+  width: 14px;
+  height: 14px;
+}
+
+/* ── Character list ────────────────────────────────────────────────────────── */
+.char-list {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  max-height: 120px;
+  overflow-y: auto;
+}
+
+.char-item {
+  display: flex;
+  align-items: center;
+  padding: 4px 8px;
+  border-radius: var(--radius);
+  border: 1px solid transparent;
+  cursor: pointer;
+  transition: background 0.1s;
+}
+.char-item:hover { background: #1a1a2e; border-color: var(--border); }
+.char-item.selected { background: #1e1e3e; border-color: var(--accent); }
+
+.char-name {
+  flex: 1;
+  font-size: 12px;
+  user-select: none;
+}
+
+.char-name-edit {
+  flex: 1;
+  background: var(--bg-dark);
+  color: var(--text);
+  border: 1px solid var(--accent);
+  border-radius: 3px;
+  padding: 1px 4px;
+  font-size: 12px;
+}
+
+/* ── 2D Preview ────────────────────────────────────────────────────────────── */
+.preview-wrapper {
+  display: flex;
+  justify-content: center;
+  background: #000;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+
+.preview-wrapper canvas {
+  display: block;
+  max-width: 100%;
+  image-rendering: pixelated;
+}
+
+/* ── Output dimension inputs ───────────────────────────────────────────────── */
+.toolbar-right label {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+.toolbar-right input[type="number"] {
+  width: 56px;
+  background: var(--bg-panel);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 2px 4px;
+  font-size: 12px;
+}
+
+/* ── Scrollbar ─────────────────────────────────────────────────────────────── */
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
+::-webkit-scrollbar-thumb:hover { background: var(--accent); }

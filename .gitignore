@@ -1,0 +1,7 @@
+node_modules/
+dist/
+.vite/
+*.local
+__pycache__/
+*.py[cod]
+# web/app/ is intentionally committed (pre-built ComfyUI static files)

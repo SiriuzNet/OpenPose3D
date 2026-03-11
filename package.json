@@ -1,0 +1,18 @@
+{
+  "name": "openpose3d",
+  "version": "1.0.0",
+  "description": "3D OpenPose Editor with face, hand, and body skeleton support",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "build:comfyui": "vite build --config vite.comfyui.config.js",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "three": "^0.161.0"
+  },
+  "devDependencies": {
+    "vite": "^5.1.0"
+  }
+}
