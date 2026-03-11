@@ -282,3 +282,94 @@ def render_scene(
                               offset, hand_radius, line_width_2d)
 
     return img
+
+
+# ── Mask generation ───────────────────────────────────────────────────────────
+
+def render_mask_single(
+    character: dict,
+    width: int,
+    height: int,
+    mask_width: int = 40,
+    camera_z: float = 3.5,
+    fov: float = 45.0,
+    include_face: bool = True,
+    include_hands: bool = True,
+    blur_radius: float = 0.0,
+) -> np.ndarray:
+    """
+    Render a single character's skeleton as a white silhouette mask on a black canvas.
+
+    Skeleton joints and connections are drawn as thick white strokes.  The
+    `mask_width` parameter controls the stroke thickness in pixels (the
+    "width" of the mask outline).  An optional Gaussian blur creates soft
+    feathered edges.
+
+    Returns:
+        float32 numpy array of shape (H, W) with values in [0.0, 1.0].
+        1.0 = body region, 0.0 = background.
+    """
+    from PIL import ImageFilter
+
+    img  = Image.new("L", (width, height), 0)
+    draw = ImageDraw.Draw(img)
+
+    offset   = character.get("offset", [0.0, 0.0, 0.0])
+    body_fmt = character.get("bodyFormat", "BODY_25")
+    kpts     = character.get("keypoints", {})
+
+    lw = max(1, mask_width)
+    r  = max(1, lw // 2)
+
+    def proj(kp):
+        return project_point(
+            kp[0] + offset[0],
+            kp[1] + offset[1],
+            kp[2] + offset[2],
+            width, height, camera_z, fov,
+        )
+
+    def draw_thick_skeleton(keypoints, connections):
+        if not keypoints:
+            return
+        projected = [proj(kp) for kp in keypoints]
+
+        # Connections — thick white lines
+        for fr, to in connections:
+            if fr >= len(projected) or to >= len(projected):
+                continue
+            p0, p1 = projected[fr], projected[to]
+            if p0 is None or p1 is None:
+                continue
+            draw.line([p0, p1], fill=255, width=lw)
+
+        # Keypoints — filled circles for rounded joints
+        for p in projected:
+            if p is None:
+                continue
+            x, y = p
+            draw.ellipse([x - r, y - r, x + r, y + r], fill=255)
+
+    if character.get("showBody", True):
+        body_kpts = kpts.get("body", [])
+        if body_kpts:
+            conns = BODY25_CONNECTIONS if body_fmt == "BODY_25" else COCO18_CONNECTIONS
+            draw_thick_skeleton(body_kpts, conns)
+
+    if include_face and character.get("showFace", True):
+        face_kpts = kpts.get("face", [])
+        if face_kpts:
+            draw_thick_skeleton(face_kpts, FACE_CONNECTIONS)
+
+    if include_hands and character.get("showHands", True):
+        rhand = kpts.get("rightHand", [])
+        if rhand:
+            draw_thick_skeleton(rhand, HAND_CONNECTIONS)
+        lhand = kpts.get("leftHand", [])
+        if lhand:
+            draw_thick_skeleton(lhand, HAND_CONNECTIONS)
+
+    if blur_radius > 0.0:
+        img = img.filter(ImageFilter.GaussianBlur(radius=blur_radius))
+
+    return np.array(img, dtype=np.float32) / 255.0

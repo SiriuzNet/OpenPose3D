@@ -8,7 +8,7 @@ import json
 import numpy as np
 import torch
 
-from .renderer import render_scene
+from .renderer import render_scene, render_mask_single
 
 
 class OpenPose3DEditor:
@@ -16,10 +16,13 @@ class OpenPose3DEditor:
     3D OpenPose Editor node.
 
     Use the embedded 3D editor widget to position body, face, and hand
-    skeletons. The node renders the pose to a ControlNet-compatible image.
+    skeletons. The node renders the pose to a ControlNet-compatible image
+    and also generates spatial masks compatible with FreeFuse.
 
     Outputs:
-        pose_image (IMAGE): RGB OpenPose skeleton image ready for ControlNet.
+        pose_image      (IMAGE):          RGB OpenPose skeleton image for ControlNet.
+        combined_mask   (MASK):           All-character binary silhouette mask [1, H, W].
+        mask_collection (FREEFUSE_MASKS): Per-character masks {"masks": {name: Tensor(H,W)}}.
     """
 
     @classmethod
@@ -47,48 +50,114 @@ class OpenPose3DEditor:
                 "camera_fov": ("FLOAT", {
                     "default": 45.0, "min": 10.0, "max": 120.0, "step": 1.0,
                 }),
+                # ── Mask generation ──────────────────────────────────────────
+                "mask_width": ("INT", {
+                    "default": 40, "min": 1, "max": 300, "step": 1,
+                    "tooltip": (
+                        "Stroke thickness (pixels) used to draw each skeleton "
+                        "connection when building the mask silhouette. "
+                        "Larger = wider body area covered."
+                    ),
+                }),
+                "include_face_mask": ("BOOLEAN", {
+                    "default": True,
+                    "tooltip": "Include 68-pt facial landmarks in the mask outline.",
+                }),
+                "include_hands_mask": ("BOOLEAN", {
+                    "default": True,
+                    "tooltip": "Include hand landmarks in the mask outline.",
+                }),
+                "mask_blur": ("FLOAT", {
+                    "default": 0.0, "min": 0.0, "max": 40.0, "step": 0.5,
+                    "tooltip": (
+                        "Gaussian blur radius applied to each mask. "
+                        "0 = hard binary edge; >0 = soft feathered edge."
+                    ),
+                }),
             },
         }
 
-    RETURN_TYPES = ("IMAGE",)
-    RETURN_NAMES = ("pose_image",)
-    FUNCTION = "render"
-    CATEGORY = "OpenPose3D"
-    DESCRIPTION = "Renders a 3D pose (edited in the embedded OpenPose3D editor) to a ControlNet pose image."
+    RETURN_TYPES  = ("IMAGE", "MASK", "FREEFUSE_MASKS")
+    RETURN_NAMES  = ("pose_image", "combined_mask", "mask_collection")
+    FUNCTION      = "render"
+    CATEGORY      = "OpenPose3D"
+    DESCRIPTION   = (
+        "Renders a 3D pose to a ControlNet pose image and generates spatial masks.\n"
+        "• pose_image      — RGB OpenPose skeleton (ControlNet input)\n"
+        "• combined_mask   — Binary silhouette of all characters (ComfyUI MASK)\n"
+        "• mask_collection — Per-character masks (FREEFUSE_MASKS, compatible with FreeFuse)"
+    )
 
     def render(
         self,
-        width: int = 512,
-        height: int = 768,
-        pose_data: str = "",
-        camera_distance: float = 3.5,
-        camera_fov: float = 45.0,
+        width:              int   = 512,
+        height:             int   = 768,
+        pose_data:          str   = "",
+        camera_distance:    float = 3.5,
+        camera_fov:         float = 45.0,
+        mask_width:         int   = 40,
+        include_face_mask:  bool  = True,
+        include_hands_mask: bool  = True,
+        mask_blur:          float = 0.0,
     ):
-        """Render pose JSON to IMAGE tensor."""
-        # Strip the internal _preview key before rendering
-        clean_json = _strip_preview(pose_data)
+        """Render pose JSON → pose image + masks."""
+        clean_json  = _strip_preview(pose_data)
+        empty_mask  = torch.zeros(1, height, width)
+        empty_ff    = {"masks": {}}
 
         if not clean_json or not clean_json.strip():
-            # No pose data → return black image
-            return (_empty_tensor(width, height),)
+            return (_empty_tensor(width, height), empty_mask, empty_ff)
 
         try:
+            # ── Pose image ───────────────────────────────────────────────────
             pil_img = render_scene(clean_json, width, height, camera_distance, camera_fov)
             img_arr = np.array(pil_img).astype(np.float32) / 255.0
-            # ComfyUI expects [batch, H, W, C]
-            tensor = torch.from_numpy(img_arr)[None,]
-            return (tensor,)
+            pose_tensor = torch.from_numpy(img_arr)[None,]   # [1, H, W, C]
+
+            # ── Masks ────────────────────────────────────────────────────────
+            scene      = json.loads(clean_json)
+            characters = scene.get("characters", [])
+
+            per_char: dict = {}
+            combined  = np.zeros((height, width), dtype=np.float32)
+
+            for i, char in enumerate(characters):
+                name     = char.get("name") or f"character_{i + 1}"
+                mask_np  = render_mask_single(
+                    char, width, height,
+                    mask_width, camera_distance, camera_fov,
+                    include_face_mask, include_hands_mask, mask_blur,
+                )
+                # FREEFUSE_MASKS value: Tensor(H, W)
+                per_char[name] = torch.from_numpy(mask_np)
+                combined = np.maximum(combined, mask_np)
+
+            # ComfyUI MASK: Tensor(1, H, W)
+            combined_mask = torch.from_numpy(combined).unsqueeze(0)
+            freefuse_masks = {"masks": per_char}
+
+            return (pose_tensor, combined_mask, freefuse_masks)
+
         except Exception as exc:
             print(f"\033[33m[OpenPose3DEditor]\033[0m Render error: {exc}")
-            return (_empty_tensor(width, height),)
+            return (_empty_tensor(width, height), empty_mask, empty_ff)
 
     @classmethod
-    def IS_CHANGED(cls, pose_data: str = "", **_kwargs):
-        """Return a hash so ComfyUI re-runs the node only when pose changes."""
+    def IS_CHANGED(
+        cls,
+        pose_data:          str   = "",
+        mask_width:         int   = 40,
+        include_face_mask:  bool  = True,
+        include_hands_mask: bool  = True,
+        mask_blur:          float = 0.0,
+        **_kwargs,
+    ):
+        """Hash of pose JSON + mask parameters so ComfyUI re-runs when any changes."""
         if not pose_data:
             return ""
         clean = _strip_preview(pose_data)
-        return hashlib.sha256(clean.encode("utf-8", errors="replace")).hexdigest()
+        key   = f"{clean}|mw={mask_width}|f={include_face_mask}|h={include_hands_mask}|b={mask_blur}"
+        return hashlib.sha256(key.encode("utf-8", errors="replace")).hexdigest()
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────

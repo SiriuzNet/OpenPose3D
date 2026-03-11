@@ -91,14 +91,40 @@ Restart ComfyUI. The **OpenPose3D Editor** node appears under the **OpenPose3D**
 
 ### Node Inputs / Outputs
 
+#### Inputs
+
 | Parameter | Type | Default | Description |
 |---|---|---|---|
-| `width` | INT | 512 | Output image width |
-| `height` | INT | 768 | Output image height |
+| `width` | INT | 512 | Output image/mask width in pixels |
+| `height` | INT | 768 | Output image/mask height in pixels |
 | `pose_data` | STRING | *(empty)* | Scene JSON (managed by the editor widget) |
 | `camera_distance` | FLOAT | 3.5 | Distance of the virtual camera from the scene origin |
 | `camera_fov` | FLOAT | 45.0 | Camera field-of-view in degrees |
-| **`pose_image`** | **IMAGE** | — | **Output**: ControlNet-compatible OpenPose skeleton image |
+| `mask_width` | INT | 40 | Stroke thickness (px) used to draw skeleton connections when building the mask silhouette — larger = wider body area covered |
+| `include_face_mask` | BOOL | True | Include 68-pt face landmarks in the mask outline |
+| `include_hands_mask` | BOOL | True | Include hand landmarks in the mask outline |
+| `mask_blur` | FLOAT | 0.0 | Gaussian blur radius for mask edges — 0 = hard binary, >0 = soft feathered |
+
+#### Outputs
+
+| Output | Type | Description |
+|---|---|---|
+| `pose_image` | IMAGE | RGB OpenPose skeleton image for ControlNet |
+| `combined_mask` | MASK | Binary silhouette of all characters combined — standard ComfyUI `MASK` tensor `[1, H, W]`, values 0–1 |
+| `mask_collection` | FREEFUSE_MASKS | Per-character masks in FreeFuse format: `{"masks": {"Character Name": Tensor(H, W), ...}}` — compatible with [FreeFuse](https://github.com/yaoliliu/FreeFuse) `FreeFuseMaskApplicator` |
+
+### Mask Generation
+
+Each character's skeleton is rendered as a thick white silhouette on a black canvas:
+
+1. All skeleton bone connections are drawn as thick white lines (`mask_width` controls thickness)
+2. Each joint is drawn as a filled circle (radius = `mask_width / 2`) for smooth, rounded joints
+3. Per-character masks are stored separately in `mask_collection`
+4. `combined_mask` is the pixel-wise maximum of all per-character masks
+
+The masks are suitable for:
+- **Region-of-interest guidance** — use as a soft spatial prior for inpainting or ControlNet
+- **FreeFuse multi-concept composition** — feed `mask_collection` directly to `FreeFuseMaskApplicator` to assign each character a separate LoRA region
 
 ### Workflow
 
@@ -107,8 +133,10 @@ Restart ComfyUI. The **OpenPose3D Editor** node appears under the **OpenPose3D**
 3. A full-screen 3D editor opens — adjust the pose by dragging keypoints
 4. Click **✓ Send to ComfyUI** in the toolbar when done
 5. The editor closes and the node thumbnail updates with your pose
-6. Queue the workflow — the node renders the pose to an image at the configured resolution
-7. Connect `pose_image` to your ControlNet node's `image` input
+6. Queue the workflow — the node renders the pose image and masks at the configured resolution
+7. Connect `pose_image` → ControlNet `image` input
+8. Connect `combined_mask` → any node that accepts a `MASK` (e.g. inpaint, latent noise mask)
+9. Connect `mask_collection` → `FreeFuseMaskApplicator.masks` for multi-character LoRA composition
 
 ### Updating the pre-built editor
 
