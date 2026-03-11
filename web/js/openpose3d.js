@@ -8,7 +8,7 @@
  *   node's `pose_data` STRING input value.
  */
 
-import { app } from "../../scripts/app.js";
+import { app } from "../../../scripts/app.js";
 
 // ── Utilities ─────────────────────────────────────────────────────────────────
 
