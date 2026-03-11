@@ -1,0 +1,284 @@
+"""
+OpenPose3D Python renderer.
+Converts scene JSON (produced by the web editor) to a PIL Image using
+the same perspective projection as the Three.js renderer2d.js.
+"""
+import json
+import math
+import numpy as np
+from PIL import Image, ImageDraw
+
+# ── Skeleton connection definitions (mirror of src/skeleton/*.js) ─────────────
+
+BODY25_CONNECTIONS = [
+    (1, 8),   # neck -> midhip
+    (1, 2),   # neck -> rshoulder
+    (2, 3),   # rshoulder -> relbow
+    (3, 4),   # relbow -> rwrist
+    (1, 5),   # neck -> lshoulder
+    (5, 6),   # lshoulder -> lelbow
+    (6, 7),   # lelbow -> lwrist
+    (8, 9),   # midhip -> rhip
+    (9, 10),  # rhip -> rknee
+    (10, 11), # rknee -> rankle
+    (8, 12),  # midhip -> lhip
+    (12, 13), # lhip -> lknee
+    (13, 14), # lknee -> lankle
+    (1, 0),   # neck -> nose
+    (0, 15),  # nose -> reye
+    (15, 17), # reye -> rear
+    (0, 16),  # nose -> leye
+    (16, 18), # leye -> lear
+    (14, 19), # lankle -> lbigtoe
+    (19, 20), # lbigtoe -> lsmalltoe
+    (14, 21), # lankle -> lheel
+    (11, 22), # rankle -> rbigtoe
+    (22, 23), # rbigtoe -> rsmalltoe
+    (11, 24), # rankle -> rheel
+]
+
+BODY25_COLORS = [
+    (255, 0, 85),   (255, 85, 0),   (255, 170, 0),  (255, 255, 0),
+    (0, 255, 0),    (0, 255, 170),  (0, 255, 255),
+    (0, 85, 255),   (0, 0, 255),    (85, 0, 255),
+    (170, 0, 255),  (255, 0, 255),  (255, 0, 136),
+    (255, 102, 0),  (255, 204, 0),  (255, 255, 136), (204, 255, 0), (136, 255, 0),
+    (0, 255, 68),   (0, 255, 153),  (0, 255, 204),
+    (0, 204, 255),  (0, 153, 255),  (0, 68, 255),
+]
+
+COCO18_CONNECTIONS = [
+    (0, 1),   # nose -> neck
+    (1, 2),   # neck -> rshoulder
+    (2, 3),   # rshoulder -> relbow
+    (3, 4),   # relbow -> rwrist
+    (1, 5),   # neck -> lshoulder
+    (5, 6),   # lshoulder -> lelbow
+    (6, 7),   # lelbow -> lwrist
+    (1, 8),   # neck -> rhip
+    (8, 9),   # rhip -> rknee
+    (9, 10),  # rknee -> rankle
+    (1, 11),  # neck -> lhip
+    (11, 12), # lhip -> lknee
+    (12, 13), # lknee -> lankle
+    (0, 14),  # nose -> reye
+    (14, 16), # reye -> rear
+    (0, 15),  # nose -> leye
+    (15, 17), # leye -> lear
+]
+
+FACE_CONNECTIONS = [
+    # Jaw outline
+    (0,1),(1,2),(2,3),(3,4),(4,5),(5,6),(6,7),(7,8),
+    (8,9),(9,10),(10,11),(11,12),(12,13),(13,14),(14,15),(15,16),
+    # Right eyebrow
+    (17,18),(18,19),(19,20),(20,21),
+    # Left eyebrow
+    (22,23),(23,24),(24,25),(25,26),
+    # Nose bridge
+    (27,28),(28,29),(29,30),
+    # Nose tip
+    (31,32),(32,33),(33,34),(34,35),(30,33),
+    # Right eye
+    (36,37),(37,38),(38,39),(39,40),(40,41),(41,36),
+    # Left eye
+    (42,43),(43,44),(44,45),(45,46),(46,47),(47,42),
+    # Outer mouth
+    (48,49),(49,50),(50,51),(51,52),(52,53),(53,54),
+    (54,55),(55,56),(56,57),(57,58),(58,59),(59,48),
+    # Inner mouth
+    (60,61),(61,62),(62,63),(63,64),(64,65),(65,66),(66,67),(67,60),
+]
+
+HAND_CONNECTIONS = [
+    (0, 1), (1, 2), (2, 3), (3, 4),      # Thumb
+    (0, 5), (5, 6), (6, 7), (7, 8),      # Index
+    (0, 9), (9, 10), (10, 11), (11, 12), # Middle
+    (0, 13), (13, 14), (14, 15), (15, 16), # Ring
+    (0, 17), (17, 18), (18, 19), (19, 20), # Pinky
+    (5, 9), (9, 13), (13, 17),            # Palm
+]
+
+HAND_COLORS = [
+    (255, 255, 0), (255, 238, 0), (255, 221, 0), (255, 204, 0),
+    (0, 255, 0),   (0, 238, 0),   (0, 221, 0),   (0, 204, 0),
+    (0, 255, 255), (0, 238, 255), (0, 221, 255), (0, 204, 255),
+    (0, 102, 255), (0, 85, 255),  (0, 68, 255),  (0, 51, 255),
+    (255, 0, 255), (238, 0, 255), (221, 0, 255), (204, 0, 255),
+    (255, 255, 255), (255, 255, 255), (255, 255, 255),
+]
+
+
+# ── Helper functions ──────────────────────────────────────────────────────────
+
+def hex_to_rgb(hex_str: str) -> tuple:
+    """Convert #rrggbb hex string to (r, g, b) tuple."""
+    h = hex_str.lstrip('#')
+    if len(h) == 3:
+        h = h[0]*2 + h[1]*2 + h[2]*2
+    return (int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16))
+
+
+def project_point(
+    x: float, y: float, z: float,
+    width: int, height: int,
+    camera_z: float = 3.5,
+    fov_y_deg: float = 45.0,
+) -> tuple | None:
+    """
+    Project a 3D world-space point to 2D screen coordinates.
+
+    Replicates Three.js PerspectiveCamera(fov=45, aspect=w/h, near=0.01, far=100)
+    at position (0, 0, camera_z) looking toward the origin along -Z.
+
+    Returns (screen_x, screen_y) or None if the point is behind the camera.
+    """
+    aspect = width / height
+    f = 1.0 / math.tan(math.radians(fov_y_deg / 2.0))
+
+    # Distance along camera view axis (positive = in front of camera)
+    view_z = camera_z - z
+    if view_z <= 0.001:
+        return None  # Behind camera
+
+    # Normalized Device Coordinates (NDC)
+    ndc_x = (f / aspect) * x / view_z
+    ndc_y = f * y / view_z
+
+    # NDC → screen pixels (Y is flipped: NDC +1 = top = screen y=0)
+    screen_x = (ndc_x + 1.0) * 0.5 * width
+    screen_y = (-ndc_y + 1.0) * 0.5 * height
+
+    return (screen_x, screen_y)
+
+
+# ── Main render function ──────────────────────────────────────────────────────
+
+def render_scene(
+    scene_json: str,
+    width: int = 512,
+    height: int = 768,
+    camera_z: float = 3.5,
+    fov: float = 45.0,
+) -> Image.Image:
+    """
+    Render an OpenPose3D scene JSON string to a PIL RGB Image.
+
+    The JSON format is the output of the web editor's saveJSON() function:
+    {
+      "settings": { bodyColor, faceColor, handColor, markerSize, ... },
+      "characters": [
+        {
+          "bodyFormat": "BODY_25",
+          "offset": [ox, oy, oz],
+          "showBody": true,
+          "showFace": true,
+          "showHands": true,
+          "keypoints": {
+            "body":      [[x,y,z], ...],  // BODY_25: 25 pts, COCO-18: 18 pts
+            "face":      [[x,y,z], ...],  // 68 pts
+            "rightHand": [[x,y,z], ...],  // 21 pts
+            "leftHand":  [[x,y,z], ...]   // 21 pts
+          }
+        }, ...
+      ]
+    }
+    """
+    # Parse JSON
+    try:
+        scene = json.loads(scene_json) if isinstance(scene_json, str) else (scene_json or {})
+    except (json.JSONDecodeError, TypeError):
+        scene = {}
+
+    characters = scene.get("characters", [])
+    settings = scene.get("settings", {})
+
+    # Settings → colors and sizes
+    bg_color    = hex_to_rgb(settings.get("backgroundColor", "#000000"))
+    body_color  = hex_to_rgb(settings.get("bodyColor",  "#ff6644"))
+    face_color  = hex_to_rgb(settings.get("faceColor",  "#00ffff"))
+    hand_color  = hex_to_rgb(settings.get("handColor",  "#ffff00"))
+
+    marker_size      = float(settings.get("markerSize",      0.025))
+    face_marker_size = float(settings.get("faceMarkerSize",  0.012))
+    hand_marker_size = float(settings.get("handMarkerSize",  0.015))
+    line_width_2d    = max(1, int(settings.get("lineWidth2D", 3)))
+
+    # Scale radii relative to canvas height (matches renderer2d.js)
+    scale       = height / 768.0
+    body_radius = max(1, int(marker_size      * 300 * scale))
+    face_radius = max(1, int(face_marker_size * 250 * scale))
+    hand_radius = max(1, int(hand_marker_size * 270 * scale))
+
+    # Create image
+    img  = Image.new("RGB", (width, height), bg_color)
+    draw = ImageDraw.Draw(img)
+
+    def project(kp, offset):
+        return project_point(
+            kp[0] + offset[0],
+            kp[1] + offset[1],
+            kp[2] + offset[2],
+            width, height, camera_z, fov,
+        )
+
+    def draw_skeleton(keypoints, connections, colors, offset, radius, lw):
+        """Draw connections then keypoint circles."""
+        projected = [project(kp, offset) for kp in keypoints]
+
+        # Connections
+        for i, (fr, to) in enumerate(connections):
+            if fr >= len(projected) or to >= len(projected):
+                continue
+            p0, p1 = projected[fr], projected[to]
+            if p0 is None or p1 is None:
+                continue
+            color = colors[i] if isinstance(colors, list) and i < len(colors) else colors
+            draw.line([p0, p1], fill=color, width=lw)
+
+        # Keypoints
+        kp_color = colors[0] if isinstance(colors, list) and colors else colors
+        for p in projected:
+            if p is None:
+                continue
+            x, y = p
+            r = radius
+            draw.ellipse([x - r, y - r, x + r, y + r], fill=kp_color)
+
+    # Draw each character
+    for char in characters:
+        offset   = char.get("offset", [0.0, 0.0, 0.0])
+        body_fmt = char.get("bodyFormat", "BODY_25")
+        kpts     = char.get("keypoints", {})
+
+        if char.get("showBody", True):
+            body_kpts = kpts.get("body", [])
+            if body_kpts:
+                if body_fmt == "BODY_25":
+                    conns  = BODY25_CONNECTIONS
+                    colors = BODY25_COLORS
+                else:
+                    conns  = COCO18_CONNECTIONS
+                    colors = [body_color] * len(COCO18_CONNECTIONS)
+                draw_skeleton(body_kpts, conns, colors, offset, body_radius, line_width_2d)
+
+        if char.get("showFace", True):
+            face_kpts = kpts.get("face", [])
+            if face_kpts:
+                draw_skeleton(
+                    face_kpts, FACE_CONNECTIONS,
+                    [face_color] * len(FACE_CONNECTIONS),
+                    offset, face_radius, line_width_2d,
+                )
+
+        if char.get("showHands", True):
+            rhand = kpts.get("rightHand", [])
+            if rhand:
+                draw_skeleton(rhand, HAND_CONNECTIONS, HAND_COLORS,
+                              offset, hand_radius, line_width_2d)
+            lhand = kpts.get("leftHand", [])
+            if lhand:
+                draw_skeleton(lhand, HAND_CONNECTIONS, HAND_COLORS,
+                              offset, hand_radius, line_width_2d)
+
+    return img

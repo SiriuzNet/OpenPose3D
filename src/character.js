@@ -147,7 +147,6 @@ export class Character {
       const geometry = new THREE.BufferGeometry().setFromPoints(points)
       const material = new THREE.LineBasicMaterial({
         color: new THREE.Color(color),
-        lineWidth: lineWidth || 2,
       })
       const line = new THREE.Line(geometry, material)
       line.userData = { part, connectionIndex: idx }

@@ -29,6 +29,8 @@ class App {
     this.settings = { ...defaultSettings }
     this.characters = []
     this.selectedCharacterId = null
+    // Detect if running inside ComfyUI iframe
+    this.comfyUIMode = new URLSearchParams(window.location.search).get('comfyui') === 'true'
 
     this._buildUI()
     this._initScene()
@@ -38,22 +40,31 @@ class App {
     // Start with one default character
     this.addCharacter()
     this._render2D()
+
+    // ComfyUI mode: listen for pose load from parent and announce ready
+    if (this.comfyUIMode) {
+      this._initComfyUIBridge()
+    }
   }
 
   // ─── UI Construction ──────────────────────────────────────────────────────────
 
   _buildUI() {
+    const comfyBtn = this.comfyUIMode
+      ? `<button id="btn-send-comfyui" title="Send pose to ComfyUI node" style="background:#1a3a2a;color:#44ff88;border-color:#225533;">✓ Send to ComfyUI</button>`
+      : ''
     document.getElementById('app').innerHTML = `
-      <div class="app-layout">
+      <div class="app-layout${this.comfyUIMode ? ' comfyui-mode' : ''}">
         <!-- Toolbar -->
         <header class="toolbar">
           <div class="toolbar-left">
-            <span class="app-title">OpenPose3D Editor</span>
+            <span class="app-title">OpenPose3D${this.comfyUIMode ? ' ✦ ComfyUI' : ' Editor'}</span>
           </div>
           <div class="toolbar-center">
             <button id="btn-add-char" title="Add character">＋ Add Character</button>
             <button id="btn-remove-char" title="Remove selected character">✕ Remove</button>
             <button id="btn-reset-pose" title="Reset pose to default">↺ Reset Pose</button>
+            ${comfyBtn}
             <button id="btn-export-png" title="Export 2D PNG for ControlNet">⬇ Export PNG</button>
             <button id="btn-save-json" title="Save scene as JSON">💾 Save JSON</button>
             <button id="btn-load-json" title="Load scene from JSON">📂 Load JSON</button>
@@ -207,6 +218,12 @@ class App {
     document.getElementById('btn-load-bg').addEventListener('click', () => document.getElementById('file-input-bg').click())
     document.getElementById('file-input-bg').addEventListener('change', e => this.loadBackground(e))
     document.getElementById('btn-clear-bg').addEventListener('click', () => this.clearBackground())
+
+    // ComfyUI send button (only present when ?comfyui=true)
+    const sendBtn = document.getElementById('btn-send-comfyui')
+    if (sendBtn) {
+      sendBtn.addEventListener('click', () => this._sendToComfyUI())
+    }
 
     // Output size
     document.getElementById('out-width').addEventListener('change', e => {
@@ -556,6 +573,72 @@ class App {
     document.getElementById('vis-body').checked = char.showBody
     document.getElementById('vis-face').checked = char.showFace
     document.getElementById('vis-hands').checked = char.showHands
+  }
+
+  // ─── ComfyUI Bridge ───────────────────────────────────────────────────────────
+
+  _initComfyUIBridge() {
+    // Listen for incoming messages from the ComfyUI parent widget
+    window.addEventListener('message', (event) => {
+      if (!event.data || event.data.type !== 'openpose3d:load') return
+      const scene = event.data.scene
+      if (!scene) return
+      try {
+        // Remove existing characters
+        this.characters.forEach(c => this.scene3d.removeCharacter(c))
+        this.characters = []
+
+        // Apply settings if present
+        if (scene.settings) {
+          Object.assign(this.settings, scene.settings)
+          this._applySettingsToUI()
+        }
+
+        // Load characters
+        if (Array.isArray(scene.characters)) {
+          scene.characters.forEach(cData => {
+            const char = new Character()
+            char.fromJSON(cData)
+            char.buildMeshes(this.settings)
+            this.characters.push(char)
+            this.scene3d.addCharacter(char)
+          })
+        }
+
+        this.selectedCharacterId = this.characters.length > 0 ? this.characters[0].id : null
+        this._updateCharList()
+        this._render2D()
+      } catch (err) {
+        console.error('OpenPose3D: error loading scene from ComfyUI', err)
+      }
+    })
+
+    // Notify the parent that the editor is ready
+    window.parent.postMessage({ type: 'openpose3d:ready' }, '*')
+  }
+
+  _sendToComfyUI() {
+    const sceneData = {
+      settings: this.settings,
+      characters: this.characters.map(c => c.toJSON()),
+    }
+
+    // Render a preview PNG at a reasonable size
+    const previewW = 256
+    const previewH = Math.round(256 * this.settings.outputHeight / this.settings.outputWidth)
+    const offCanvas = document.createElement('canvas')
+    offCanvas.width = previewW
+    offCanvas.height = previewH
+    const offRenderer = new Renderer2D(offCanvas)
+    offRenderer.setBackgroundColor(this.settings.backgroundColor)
+    offRenderer.render(this.characters, this.scene3d.camera, this.settings)
+    const previewDataURL = offCanvas.toDataURL('image/png')
+
+    window.parent.postMessage({
+      type: 'openpose3d:apply',
+      scene: sceneData,
+      preview: previewDataURL,
+    }, '*')
   }
 }
 
