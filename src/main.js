@@ -7,6 +7,22 @@ import { Scene3D } from './scene3d.js'
 import { Renderer2D } from './renderer2d.js'
 import { Character } from './character.js'
 
+// ─── SDXL-compatible resolution presets (width, height) ──────────────────────
+// All pairs keep approximately 1 megapixel and use multiples of 64.
+export const SDXL_SIZES = [
+  [640, 1536],
+  [768, 1344],
+  [832, 1216],
+  [896, 1152],
+  [1024, 1024],
+  [1152, 896],
+  [1216, 832],
+  [1344, 768],
+  [1536, 640],
+]
+// Default SDXL index: 1024×1024
+const DEFAULT_SDXL_IDX = 4
+
 // ─── Settings (default values) ────────────────────────────────────────────────
 export const defaultSettings = {
   bodyFormat: 'BODY_25',      // 'BODY_25' or 'COCO_18'
@@ -18,8 +34,8 @@ export const defaultSettings = {
   handMarkerSize: 0.015,
   lineWidth: 2,               // 3D line width
   lineWidth2D: 3,             // 2D canvas line width
-  outputWidth: 512,
-  outputHeight: 768,
+  outputWidth: SDXL_SIZES[DEFAULT_SDXL_IDX][0],
+  outputHeight: SDXL_SIZES[DEFAULT_SDXL_IDX][1],
   backgroundColor: '#000000',
   showGrid: true,
 }
@@ -76,10 +92,11 @@ class App {
             <button id="btn-help" title="Help &amp; shortcuts" style="color:#aabbff;border-color:#334477;">❓ Help</button>
           </div>
           <div class="toolbar-right">
-            <label>Output:
-              <input id="out-width" type="number" value="512" min="64" max="2048" step="64">
-              ×
-              <input id="out-height" type="number" value="768" min="64" max="2048" step="64">
+            <label class="sdxl-label">
+              <span>Width</span>
+              <input id="out-width-slider" type="range"
+                min="0" max="${SDXL_SIZES.length - 1}" step="1" value="${DEFAULT_SDXL_IDX}">
+              <span id="out-size-display">${SDXL_SIZES[DEFAULT_SDXL_IDX][0]} × ${SDXL_SIZES[DEFAULT_SDXL_IDX][1]}</span>
             </label>
           </div>
         </header>
@@ -177,6 +194,28 @@ class App {
               <label class="setting-row checkbox-row">
                 <input type="checkbox" id="vis-hands" checked>
                 <span>Hands</span>
+              </label>
+
+              <h3 style="margin-top:10px">Character Scale</h3>
+              <label class="setting-row">
+                <span>Body Scale</span>
+                <input type="range" id="char-scale" min="0.3" max="3.0" step="0.05" value="1.0">
+                <span id="char-scale-val">1.0</span>
+              </label>
+              <label class="setting-row">
+                <span>Hand Scale</span>
+                <input type="range" id="hand-scale" min="0.2" max="4.0" step="0.1" value="1.0">
+                <span id="hand-scale-val">1.0</span>
+              </label>
+              <label class="setting-row">
+                <span>Face Scale</span>
+                <input type="range" id="face-scale" min="0.2" max="4.0" step="0.1" value="1.0">
+                <span id="face-scale-val">1.0</span>
+              </label>
+              <label class="setting-row">
+                <span>Feet Scale</span>
+                <input type="range" id="feet-scale" min="0.2" max="4.0" step="0.1" value="1.0">
+                <span id="feet-scale-val">1.0</span>
               </label>
             </section>
 
@@ -300,14 +339,14 @@ class App {
       sendBtn.addEventListener('click', () => this._sendToComfyUI())
     }
 
-    // Output size — use 'input' for real-time preview updates
-    document.getElementById('out-width').addEventListener('input', e => {
-      const v = parseInt(e.target.value)
-      if (v >= 64) { this.settings.outputWidth = v; this._render2D() }
-    })
-    document.getElementById('out-height').addEventListener('input', e => {
-      const v = parseInt(e.target.value)
-      if (v >= 64) { this.settings.outputHeight = v; this._render2D() }
+    // Output size — SDXL presets slider
+    document.getElementById('out-width-slider').addEventListener('input', e => {
+      const idx = parseInt(e.target.value)
+      const [w, h] = SDXL_SIZES[idx]
+      this.settings.outputWidth = w
+      this.settings.outputHeight = h
+      document.getElementById('out-size-display').textContent = `${w} × ${h}`
+      this._render2D()
     })
 
     // Body format
@@ -379,6 +418,32 @@ class App {
       const char = this._getSelectedCharacter()
       if (!char) return
       char.showHands = e.target.checked
+      this._rebuildCharacter(char)
+    })
+
+    // Per-character scale sliders
+    this._bindRangeInput('char-scale', 'char-scale-val', v => {
+      const char = this._getSelectedCharacter()
+      if (!char) return
+      char.charScale = parseFloat(v)
+      this._rebuildCharacter(char)
+    })
+    this._bindRangeInput('hand-scale', 'hand-scale-val', v => {
+      const char = this._getSelectedCharacter()
+      if (!char) return
+      char.handScale = parseFloat(v)
+      this._rebuildCharacter(char)
+    })
+    this._bindRangeInput('face-scale', 'face-scale-val', v => {
+      const char = this._getSelectedCharacter()
+      if (!char) return
+      char.faceScale = parseFloat(v)
+      this._rebuildCharacter(char)
+    })
+    this._bindRangeInput('feet-scale', 'feet-scale-val', v => {
+      const char = this._getSelectedCharacter()
+      if (!char) return
+      char.feetScale = parseFloat(v)
       this._rebuildCharacter(char)
     })
 
@@ -650,8 +715,20 @@ class App {
     document.getElementById('hand-color').value = this.settings.handColor
     document.getElementById('bg-color').value = this.settings.backgroundColor
     document.getElementById('show-grid').checked = this.settings.showGrid
-    document.getElementById('out-width').value = this.settings.outputWidth
-    document.getElementById('out-height').value = this.settings.outputHeight
+    // SDXL slider: find the closest preset
+    const w = this.settings.outputWidth
+    const h = this.settings.outputHeight
+    let bestIdx = DEFAULT_SDXL_IDX
+    let bestDist = Infinity
+    SDXL_SIZES.forEach(([sw, sh], i) => {
+      const d = Math.abs(sw - w) + Math.abs(sh - h)
+      if (d < bestDist) { bestDist = d; bestIdx = i }
+    })
+    document.getElementById('out-width-slider').value = bestIdx
+    document.getElementById('out-size-display').textContent = `${SDXL_SIZES[bestIdx][0]} × ${SDXL_SIZES[bestIdx][1]}`
+    // Snap settings to the chosen preset
+    this.settings.outputWidth = SDXL_SIZES[bestIdx][0]
+    this.settings.outputHeight = SDXL_SIZES[bestIdx][1]
   }
 
   // ─── UI Updates ───────────────────────────────────────────────────────────────
@@ -700,6 +777,18 @@ class App {
     document.getElementById('vis-body').checked = char.showBody
     document.getElementById('vis-face').checked = char.showFace
     document.getElementById('vis-hands').checked = char.showHands
+
+    // Scale sliders
+    const setSlider = (id, valId, value) => {
+      const el = document.getElementById(id)
+      const valEl = document.getElementById(valId)
+      if (el) el.value = value
+      if (valEl) valEl.textContent = value
+    }
+    setSlider('char-scale', 'char-scale-val', char.charScale)
+    setSlider('hand-scale', 'hand-scale-val', char.handScale)
+    setSlider('face-scale', 'face-scale-val', char.faceScale)
+    setSlider('feet-scale', 'feet-scale-val', char.feetScale)
   }
 
   // ─── ComfyUI Bridge ───────────────────────────────────────────────────────────

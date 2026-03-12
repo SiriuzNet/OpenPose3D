@@ -132,6 +132,12 @@ export class Character {
     this.showFace = true
     this.showHands = true
 
+    // Per-character scale factors
+    this.charScale = options.charScale || 1.0
+    this.handScale = options.handScale || 1.0
+    this.faceScale = options.faceScale || 1.0
+    this.feetScale = options.feetScale || 1.0
+
     // Flat keypoint arrays (for serialization and 2D rendering)
     this.keypoints = {
       body: [],
@@ -180,8 +186,8 @@ export class Character {
     const rwrist = this.keypoints.body[rwristIdx]
     const lwrist = this.keypoints.body[lwristIdx]
 
-    const rHandPts = getDefaultHandPose([rwrist.x, rwrist.y, rwrist.z], 0.1, false)
-    const lHandPts = getDefaultHandPose([lwrist.x, lwrist.y, lwrist.z], 0.1, true)
+    const rHandPts = getDefaultHandPose([rwrist.x, rwrist.y, rwrist.z], 0.16, false)
+    const lHandPts = getDefaultHandPose([lwrist.x, lwrist.y, lwrist.z], 0.16, true)
 
     this.keypoints.rightHand = rHandPts.map(([x, y, z]) => new THREE.Vector3(x, y, z))
     this.keypoints.leftHand = lHandPts.map(([x, y, z]) => new THREE.Vector3(x, y, z))
@@ -192,6 +198,9 @@ export class Character {
     this.group.clear()
     this.boneGroup = new THREE.Group()
     this.boneGroup.userData.characterId = this.id
+
+    // Apply overall character scale
+    this.group.scale.setScalar(this.charScale)
 
     // Build body as bone hierarchy
     if (this.showBody) {
@@ -206,9 +215,14 @@ export class Character {
     // Update world matrices so anchor bone positions are correct for attached spheres
     this.group.updateMatrixWorld(true)
 
+    // Apply feet scale for BODY_25 by inserting scale containers under ankle bones
+    if (this.showBody && this.bodyFormat === 'BODY_25') {
+      this._applyFeetScale()
+    }
+
     // Build face attached to Nose bone (index 0)
     if (this.showFace) {
-      this._buildAttachedKeypointSpheres('face', this.keypoints.face, settings.faceColor, settings.faceMarkerSize, 0)
+      this._buildAttachedKeypointSpheres('face', this.keypoints.face, settings.faceColor, settings.faceMarkerSize, 0, this.faceScale)
       this._buildConnectionLines('face', this.keypoints.face, FACE_CONNECTIONS, FACE_COLOR, settings.lineWidth)
     }
 
@@ -217,14 +231,16 @@ export class Character {
       const rwristIdx = this.bodyFormat === 'BODY_25' ? 4 : 4
       const lwristIdx = this.bodyFormat === 'BODY_25' ? 7 : 7
 
-      this._buildAttachedKeypointSpheres('rightHand', this.keypoints.rightHand, settings.handColor, settings.handMarkerSize, rwristIdx)
+      this._buildAttachedKeypointSpheres('rightHand', this.keypoints.rightHand, settings.handColor, settings.handMarkerSize, rwristIdx, this.handScale)
       this._buildConnectionLines('rightHand', this.keypoints.rightHand, HAND_CONNECTIONS, HAND_CONNECTION_COLORS, settings.lineWidth)
 
-      this._buildAttachedKeypointSpheres('leftHand', this.keypoints.leftHand, settings.handColor, settings.handMarkerSize, lwristIdx)
+      this._buildAttachedKeypointSpheres('leftHand', this.keypoints.leftHand, settings.handColor, settings.handMarkerSize, lwristIdx, this.handScale)
       this._buildConnectionLines('leftHand', this.keypoints.leftHand, HAND_CONNECTIONS, HAND_CONNECTION_COLORS, settings.lineWidth)
     }
 
     this.group.position.copy(this.offset)
+    // Ensure world matrices are current (including scale group transforms)
+    this.group.updateMatrixWorld(true)
   }
 
   _buildBoneHierarchy(color, size) {
@@ -298,6 +314,33 @@ export class Character {
   }
 
   /**
+   * Apply feetScale for BODY_25 by inserting a scale container between each
+   * ankle bone and its direct foot children (BigToe, Heel).
+   * Called from buildMeshes after _buildBoneHierarchy.
+   */
+  _applyFeetScale() {
+    if (this.feetScale === 1.0) return
+    const ankleData = [
+      { ankleIdx: 11, directChildIndices: [22, 24] },  // RAnkle → RBigToe, RHeel
+      { ankleIdx: 14, directChildIndices: [19, 21] },  // LAnkle → LBigToe, LHeel
+    ]
+    for (const { ankleIdx, directChildIndices } of ankleData) {
+      const ankleBone = this.bones[ankleIdx]
+      if (!ankleBone) continue
+      const scaleGroup = new THREE.Group()
+      scaleGroup.scale.setScalar(this.feetScale)
+      ankleBone.object3d.add(scaleGroup)
+      for (const childIdx of directChildIndices) {
+        const childBone = this.bones[childIdx]
+        if (!childBone) continue
+        ankleBone.object3d.remove(childBone.object3d)
+        scaleGroup.add(childBone.object3d)
+      }
+    }
+    this.boneGroup.updateMatrixWorld(true)
+  }
+
+  /**
    * Build keypoint spheres attached to a parent bone's Object3D.
    * Positions are stored relative to the anchor bone so they follow its transforms.
    *
@@ -305,14 +348,23 @@ export class Character {
    * space, so the sphere offset = kp - anchorLocalPos (group-local subtraction).
    * This is independent of the character's world offset and works correctly on
    * rebuild even when the character has been moved.
+   *
+   * @param {string} part - keypoint part name ('face', 'rightHand', 'leftHand')
+   * @param {THREE.Vector3[]} keypoints - keypoint positions in group-local space
+   * @param {string} color - hex color for the spheres
+   * @param {number} size - sphere radius
+   * @param {number} anchorBoneIdx - index of the body bone to attach to
+   * @param {number} [partScale=1.0] - uniform scale applied to the part container relative to the anchor
    */
-  _buildAttachedKeypointSpheres(part, keypoints, color, size, anchorBoneIdx) {
+  _buildAttachedKeypointSpheres(part, keypoints, color, size, anchorBoneIdx, partScale = 1.0) {
     this.meshes[part] = []
 
     // The container group lives inside the anchor bone's Object3D
     const anchorBone = this.bones[anchorBoneIdx]
     const container = new THREE.Group()
     container.name = `attached_${part}`
+    // Apply part-specific scale (scales position and size of spheres relative to anchor)
+    if (partScale !== 1.0) container.scale.setScalar(partScale)
 
     // Store container ref for syncing later
     if (!this._attachedContainers) this._attachedContainers = {}
@@ -510,6 +562,10 @@ export class Character {
       showBody: this.showBody,
       showFace: this.showFace,
       showHands: this.showHands,
+      charScale: this.charScale,
+      handScale: this.handScale,
+      faceScale: this.faceScale,
+      feetScale: this.feetScale,
       keypoints: {
         body: this.keypoints.body.map(v => v.toArray()),
         face: this.keypoints.face.map(v => v.toArray()),
@@ -526,6 +582,10 @@ export class Character {
     this.showBody = data.showBody
     this.showFace = data.showFace
     this.showHands = data.showHands
+    this.charScale = data.charScale ?? 1.0
+    this.handScale = data.handScale ?? 1.0
+    this.faceScale = data.faceScale ?? 1.0
+    this.feetScale = data.feetScale ?? 1.0
     this.keypoints.body = data.keypoints.body.map(a => new THREE.Vector3(...a))
     this.keypoints.face = data.keypoints.face.map(a => new THREE.Vector3(...a))
     this.keypoints.rightHand = data.keypoints.rightHand.map(a => new THREE.Vector3(...a))
