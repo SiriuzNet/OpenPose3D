@@ -8,8 +8,7 @@ import {
   BODY25_CONNECTION_COLORS,
   COCO18_CONNECTIONS,
 } from './skeleton/body.js'
-import { FACE_CONNECTIONS, FACE_COLOR } from './skeleton/face.js'
-import { HAND_CONNECTIONS, HAND_CONNECTION_COLORS } from './skeleton/hands.js'
+import { HAND_CONNECTIONS, HAND_CONNECTION_COLORS, HAND_KEYPOINT_COLORS } from './skeleton/hands.js'
 
 export class Renderer2D {
   constructor(canvas) {
@@ -90,11 +89,9 @@ export class Renderer2D {
       }
 
       if (character.showFace) {
-        this._renderSkeleton(
+        this._renderFaceDots(
           character.keypoints.face,
-          FACE_CONNECTIONS,
-          FACE_COLOR,
-          camera, groupMatrix, settings.faceColor, settings.faceMarkerSize * 250 * scale, settings.lineWidth2D * scale,
+          camera, groupMatrix, settings.faceMarkerSize * 250 * scale,
         )
       }
 
@@ -104,18 +101,20 @@ export class Renderer2D {
           HAND_CONNECTIONS,
           HAND_CONNECTION_COLORS,
           camera, groupMatrix, settings.handColor, settings.handMarkerSize * 270 * scale, settings.lineWidth2D * scale,
+          HAND_KEYPOINT_COLORS,
         )
         this._renderSkeleton(
           character.keypoints.leftHand,
           HAND_CONNECTIONS,
           HAND_CONNECTION_COLORS,
           camera, groupMatrix, settings.handColor, settings.handMarkerSize * 270 * scale, settings.lineWidth2D * scale,
+          HAND_KEYPOINT_COLORS,
         )
       }
     }
   }
 
-  _renderSkeleton(keypoints, connections, colors, camera, groupMatrix, defaultColor, markerRadius, lineWidth) {
+  _renderSkeleton(keypoints, connections, colors, camera, groupMatrix, defaultColor, markerRadius, lineWidth, keypointColors = null) {
     const ctx = this.ctx
     const projected = keypoints.map(kp => this._project(kp, camera, groupMatrix))
 
@@ -133,11 +132,30 @@ export class Renderer2D {
       ctx.stroke()
     })
 
-    // Draw keypoint circles
+    // Draw keypoint circles (optionally per-keypoint colored)
     projected.forEach((p, idx) => {
       if (!p.visible) return
-      const color = defaultColor
+      const color = keypointColors
+        ? (keypointColors[idx] || defaultColor)
+        : defaultColor
       ctx.fillStyle = color
+      ctx.beginPath()
+      ctx.arc(p.x, p.y, markerRadius, 0, Math.PI * 2)
+      ctx.fill()
+    })
+  }
+
+  /**
+   * Render face keypoints as white dots only (no connecting lines).
+   * This matches the visual style of huchenlei/ComfyUI-openpose-editor.
+   */
+  _renderFaceDots(keypoints, camera, groupMatrix, markerRadius) {
+    const ctx = this.ctx
+    const projected = keypoints.map(kp => this._project(kp, camera, groupMatrix))
+
+    ctx.fillStyle = '#ffffff'
+    projected.forEach((p) => {
+      if (!p.visible) return
       ctx.beginPath()
       ctx.arc(p.x, p.y, markerRadius, 0, Math.PI * 2)
       ctx.fill()

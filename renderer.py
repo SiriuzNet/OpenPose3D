@@ -108,6 +108,17 @@ HAND_COLORS = [
     (255, 255, 255), (255, 255, 255), (255, 255, 255),
 ]
 
+# Per-keypoint colors for hand joints (used to color each dot individually)
+# Matches HAND_KEYPOINT_COLORS in hands.js
+HAND_KEYPOINT_COLORS = [
+    (255, 255, 255),                                               # 0  Wrist
+    (255, 255, 0), (255, 238, 0), (255, 221, 0), (255, 204, 0),   # 1-4  Thumb
+    (0, 255, 0),   (0, 238, 0),   (0, 221, 0),   (0, 204, 0),    # 5-8  Index
+    (0, 255, 255), (0, 238, 255), (0, 221, 255), (0, 204, 255),   # 9-12 Middle
+    (0, 102, 255), (0, 85, 255),  (0, 68, 255),  (0, 51, 255),   # 13-16 Ring
+    (255, 0, 255), (238, 0, 255), (221, 0, 255), (204, 0, 255),   # 17-20 Pinky
+]
+
 
 # ── Helper functions ──────────────────────────────────────────────────────────
 
@@ -266,8 +277,16 @@ def render_scene(
             vp, width, height,
         )
 
-    def draw_skeleton(keypoints, connections, colors, offset, radius, lw):
-        """Draw connections then keypoint circles."""
+    def draw_skeleton(keypoints, connections, colors, offset, radius, lw, kp_colors=None):
+        """Draw connections then keypoint circles.
+
+        Parameters
+        ----------
+        kp_colors : list or None
+            Per-keypoint colour list (same length as *keypoints*).  When given
+            each dot is coloured individually; otherwise the first colour from
+            *colors* is used for all dots.
+        """
         projected = [project(kp, offset) for kp in keypoints]
 
         # Connections
@@ -280,14 +299,39 @@ def render_scene(
             color = colors[i] if isinstance(colors, list) and i < len(colors) else colors
             draw.line([p0, p1], fill=color, width=lw)
 
-        # Keypoints
-        kp_color = colors[0] if isinstance(colors, list) and colors else colors
-        for p in projected:
+        # Keypoints — optionally per-keypoint coloured
+        for idx, p in enumerate(projected):
             if p is None:
                 continue
             x, y = p
             r = radius
-            draw.ellipse([x - r, y - r, x + r, y + r], fill=kp_color)
+            if kp_colors is not None:
+                kpc = kp_colors[idx] if idx < len(kp_colors) else kp_colors[0]
+            else:
+                kpc = colors[0] if isinstance(colors, list) and colors else colors
+            draw.ellipse([x - r, y - r, x + r, y + r], fill=kpc)
+
+    def draw_face_dots(keypoints, offset, radius):
+        """Draw face keypoints as white dots with NO connecting lines.
+
+        This matches the visual style of huchenlei/ComfyUI-openpose-editor
+        where the 68-point face mesh is shown as a ring of white dots.
+
+        Parameters
+        ----------
+        keypoints : list of [x, y, z]
+            3D coordinates of the 68 face landmarks.
+        offset : list of [x, y, z]
+            World-space offset of the character (from character.get("offset")).
+        radius : int
+            Dot radius in pixels.
+        """
+        projected = [project(kp, offset) for kp in keypoints]
+        for p in projected:
+            if p is None:
+                continue
+            x, y = p
+            draw.ellipse([x - radius, y - radius, x + radius, y + radius], fill=(255, 255, 255))
 
     # Draw each character
     for char in characters:
@@ -309,21 +353,19 @@ def render_scene(
         if char.get("showFace", True):
             face_kpts = kpts.get("face", [])
             if face_kpts:
-                draw_skeleton(
-                    face_kpts, FACE_CONNECTIONS,
-                    [face_color] * len(FACE_CONNECTIONS),
-                    offset, face_radius, line_width_2d,
-                )
+                draw_face_dots(face_kpts, offset, face_radius)
 
         if char.get("showHands", True):
             rhand = kpts.get("rightHand", [])
             if rhand:
                 draw_skeleton(rhand, HAND_CONNECTIONS, HAND_COLORS,
-                              offset, hand_radius, line_width_2d)
+                              offset, hand_radius, line_width_2d,
+                              kp_colors=HAND_KEYPOINT_COLORS)
             lhand = kpts.get("leftHand", [])
             if lhand:
                 draw_skeleton(lhand, HAND_CONNECTIONS, HAND_COLORS,
-                              offset, hand_radius, line_width_2d)
+                              offset, hand_radius, line_width_2d,
+                              kp_colors=HAND_KEYPOINT_COLORS)
 
     return img
 
