@@ -38,9 +38,13 @@ export class Renderer2D {
 
   /**
    * Project a 3D point through the given camera to 2D canvas coordinates.
+   * @param {THREE.Vector3} point3d - keypoint in character-local space
+   * @param {THREE.Camera} camera
+   * @param {THREE.Matrix4} groupMatrix - character.group.matrixWorld (local→world)
    */
-  _project(point3d, camera) {
+  _project(point3d, camera, groupMatrix) {
     const v = point3d.clone()
+    if (groupMatrix) v.applyMatrix4(groupMatrix)
     v.project(camera)
     return {
       x: (v.x + 1) * 0.5 * this.width,
@@ -56,6 +60,10 @@ export class Renderer2D {
     const ctx = this.ctx
     ctx.clearRect(0, 0, this.width, this.height)
 
+    // Ensure camera matrices are up-to-date (critical when rendering
+    // asynchronously from the main 3D render loop, e.g. setInterval preview)
+    camera.updateMatrixWorld()
+
     // Background
     if (this.backgroundImage) {
       ctx.drawImage(this.backgroundImage, 0, 0, this.width, this.height)
@@ -68,12 +76,16 @@ export class Renderer2D {
     const scale = this.height / 768
 
     for (const character of characters) {
+      // Ensure world matrix is current, then use it to transform local→world
+      character.group.updateMatrixWorld(true)
+      const groupMatrix = character.group.matrixWorld
+
       if (character.showBody) {
         this._renderSkeleton(
           character.keypoints.body,
           character.bodyFormat === 'BODY_25' ? BODY25_CONNECTIONS : COCO18_CONNECTIONS,
           character.bodyFormat === 'BODY_25' ? BODY25_CONNECTION_COLORS : null,
-          camera, settings.bodyColor, settings.markerSize * 300 * scale, settings.lineWidth2D * scale,
+          camera, groupMatrix, settings.bodyColor, settings.markerSize * 300 * scale, settings.lineWidth2D * scale,
         )
       }
 
@@ -82,7 +94,7 @@ export class Renderer2D {
           character.keypoints.face,
           FACE_CONNECTIONS,
           FACE_COLOR,
-          camera, settings.faceColor, settings.faceMarkerSize * 250 * scale, settings.lineWidth2D * scale,
+          camera, groupMatrix, settings.faceColor, settings.faceMarkerSize * 250 * scale, settings.lineWidth2D * scale,
         )
       }
 
@@ -91,21 +103,21 @@ export class Renderer2D {
           character.keypoints.rightHand,
           HAND_CONNECTIONS,
           HAND_CONNECTION_COLORS,
-          camera, settings.handColor, settings.handMarkerSize * 270 * scale, settings.lineWidth2D * scale,
+          camera, groupMatrix, settings.handColor, settings.handMarkerSize * 270 * scale, settings.lineWidth2D * scale,
         )
         this._renderSkeleton(
           character.keypoints.leftHand,
           HAND_CONNECTIONS,
           HAND_CONNECTION_COLORS,
-          camera, settings.handColor, settings.handMarkerSize * 270 * scale, settings.lineWidth2D * scale,
+          camera, groupMatrix, settings.handColor, settings.handMarkerSize * 270 * scale, settings.lineWidth2D * scale,
         )
       }
     }
   }
 
-  _renderSkeleton(keypoints, connections, colors, camera, defaultColor, markerRadius, lineWidth) {
+  _renderSkeleton(keypoints, connections, colors, camera, groupMatrix, defaultColor, markerRadius, lineWidth) {
     const ctx = this.ctx
-    const projected = keypoints.map(kp => this._project(kp, camera))
+    const projected = keypoints.map(kp => this._project(kp, camera, groupMatrix))
 
     // Draw connections
     ctx.lineWidth = lineWidth || 2

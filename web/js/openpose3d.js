@@ -99,6 +99,8 @@ app.registerExtension({
 
       // ── Find / hide the raw pose_data string widget ──────────────────────────
       const poseWidget = this.widgets?.find((w) => w.name === "pose_data");
+      const widthWidget = this.widgets?.find((w) => w.name === "width");
+      const heightWidget = this.widgets?.find((w) => w.name === "height");
       if (poseWidget) {
         // Collapse the raw string widget to zero height so it's invisible
         // but still serialised with the workflow.
@@ -218,15 +220,25 @@ app.registerExtension({
         const currentPose = poseWidget?.value ?? "";
 
         iframe.addEventListener("load", () => {
+          // Always send node dimensions so editor output matches
+          const nodeW = widthWidget?.value ?? 512;
+          const nodeH = heightWidget?.value ?? 768;
+
           if (currentPose) {
             try {
               const sceneObj = JSON.parse(currentPose);
               sceneObj._preview = undefined; // strip before sending
               iframe.contentWindow?.postMessage(
-                { type: "openpose3d:load", scene: sceneObj },
+                { type: "openpose3d:load", scene: sceneObj, nodeWidth: nodeW, nodeHeight: nodeH },
                 "*"
               );
             } catch (_) {}
+          } else {
+            // No saved pose yet — still sync output dimensions
+            iframe.contentWindow?.postMessage(
+              { type: "openpose3d:setSize", width: nodeW, height: nodeH },
+              "*"
+            );
           }
         });
 
@@ -236,21 +248,37 @@ app.registerExtension({
 
           if (event.data.type === "openpose3d:ready") {
             // Editor signalled it's ready; send current pose if any
+            const nodeW = widthWidget?.value ?? 512;
+            const nodeH = heightWidget?.value ?? 768;
+
             if (currentPose) {
               try {
                 const sceneObj = JSON.parse(currentPose);
                 sceneObj._preview = undefined;
                 iframe.contentWindow?.postMessage(
-                  { type: "openpose3d:load", scene: sceneObj },
+                  { type: "openpose3d:load", scene: sceneObj, nodeWidth: nodeW, nodeHeight: nodeH },
                   "*"
                 );
               } catch (_) {}
+            } else {
+              iframe.contentWindow?.postMessage(
+                { type: "openpose3d:setSize", width: nodeW, height: nodeH },
+                "*"
+              );
             }
           }
 
           if (event.data.type === "openpose3d:apply") {
             const sceneData   = event.data.scene   ?? {};
             const previewData = event.data.preview ?? null;
+
+            // Sync editor output dimensions back to node width/height widgets
+            if (sceneData.settings) {
+              if (widthWidget && sceneData.settings.outputWidth)
+                widthWidget.value = sceneData.settings.outputWidth;
+              if (heightWidget && sceneData.settings.outputHeight)
+                heightWidget.value = sceneData.settings.outputHeight;
+            }
 
             // Build the pose JSON value stored in the node widget
             const poseJson = JSON.stringify({

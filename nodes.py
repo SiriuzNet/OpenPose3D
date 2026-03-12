@@ -118,6 +118,12 @@ class OpenPose3DEditor:
             scene      = json.loads(clean_json)
             characters = scene.get("characters", [])
 
+            # Extract camera state from scene (stored by the 3D editor)
+            camera_data = scene.get("camera")
+            cam_pos    = camera_data.get("position") if camera_data else None
+            cam_target = camera_data.get("target")   if camera_data else None
+            cam_fov    = camera_data.get("fov", camera_fov) if camera_data else camera_fov
+
             per_char: dict = {}
             combined  = np.zeros((height, width), dtype=np.float32)
 
@@ -125,8 +131,9 @@ class OpenPose3DEditor:
                 name     = char.get("name") or f"character_{i + 1}"
                 mask_np  = render_mask_single(
                     char, width, height,
-                    mask_width, camera_distance, camera_fov,
+                    mask_width, camera_distance, cam_fov,
                     include_face_mask, include_hands_mask, mask_blur,
+                    camera_pos=cam_pos, camera_target=cam_target,
                 )
                 # FREEFUSE_MASKS value: Tensor(H, W)
                 per_char[name] = torch.from_numpy(mask_np)

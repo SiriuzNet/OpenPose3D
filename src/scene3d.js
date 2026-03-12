@@ -1,22 +1,29 @@
 /**
  * 3D Scene manager using Three.js.
- * Handles rendering, camera, lights, and keypoint interaction.
+ * Handles rendering, camera, lights, and keypoint interaction via TransformControls.
  */
 import * as THREE from 'three'
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
+import { TransformControls } from 'three/examples/jsm/controls/TransformControls.js'
 
 export class Scene3D {
   constructor(canvas, onKeypointDrag) {
     this.canvas = canvas
     this.onKeypointDrag = onKeypointDrag
     this.characters = []
-    this.selectedMesh = null
-    this.isDragging = false
-    this.dragPlane = new THREE.Plane()
-    this.dragOffset = new THREE.Vector3()
-    this.mouseDownPos = new THREE.Vector2()
+    this.selectedBone = null
+    this.selectedCharacter = null
+
+    // Interaction mode: 'rotate' or 'translate'
+    this._moveMode = false
+    this._isClick = false
+
+    // Callbacks for UI updates
+    this.onModeChange = null
+    this.onSelectionChange = null
 
     this._init()
+    this._setupTransformControls()
     this._setupInteraction()
     this._animate()
   }
@@ -82,12 +89,43 @@ export class Scene3D {
     this.camera.updateProjectionMatrix()
   }
 
+  _setupTransformControls() {
+    this.transformControls = new TransformControls(this.camera, this.renderer.domElement)
+    this.transformControls.setMode('rotate')
+    this.transformControls.setSize(0.5)
+    this.transformControls.setSpace('local')
+    this.scene.add(this.transformControls)
+
+    // Disable orbit while using gizmo
+    this.transformControls.addEventListener('mouseDown', () => {
+      this.orbitControls.enabled = false
+    })
+    this.transformControls.addEventListener('mouseUp', () => {
+      this.orbitControls.enabled = true
+      // Sync keypoint positions after transform
+      this._syncAfterTransform()
+    })
+    this.transformControls.addEventListener('change', () => {
+      // Live update during drag
+      this._syncAfterTransform()
+    })
+  }
+
   _setupInteraction() {
     const el = this.renderer.domElement
 
     el.addEventListener('pointerdown', e => this._onPointerDown(e))
     el.addEventListener('pointermove', e => this._onPointerMove(e))
     el.addEventListener('pointerup', e => this._onPointerUp(e))
+
+    // Keyboard: X for move mode
+    document.addEventListener('keydown', e => {
+      if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') return
+      if (e.code === 'KeyX') this.setMoveMode(true)
+    })
+    document.addEventListener('keyup', e => {
+      if (e.code === 'KeyX') this.setMoveMode(false)
+    })
   }
 
   _getMouseNDC(event) {
@@ -100,54 +138,109 @@ export class Scene3D {
 
   _onPointerDown(event) {
     if (event.button !== 0) return
-
-    const mouse = this._getMouseNDC(event)
-    this.mouseDownPos.copy(mouse)
-    this.raycaster.setFromCamera(mouse, this.camera)
-
-    // Collect all keypoint meshes
-    const allMeshes = this.characters.flatMap(c => c.getAllMeshes())
-    const intersects = this.raycaster.intersectObjects(allMeshes, false)
-
-    if (intersects.length > 0) {
-      this.selectedMesh = intersects[0].object
-      this.orbitControls.enabled = false
-      this.isDragging = true
-
-      // Set up drag plane perpendicular to camera
-      const normal = new THREE.Vector3(0, 0, 1).applyQuaternion(this.camera.quaternion)
-      this.dragPlane.setFromNormalAndCoplanarPoint(normal, this.selectedMesh.position)
-
-      event.stopPropagation()
-    }
+    this._isClick = true
   }
 
   _onPointerMove(event) {
-    if (!this.isDragging || !this.selectedMesh) return
+    if (event.movementX !== 0 || event.movementY !== 0) {
+      this._isClick = false
+    }
+  }
+
+  _onPointerUp(event) {
+    if (!this._isClick || event.button !== 0) return
 
     const mouse = this._getMouseNDC(event)
     this.raycaster.setFromCamera(mouse, this.camera)
 
-    const target = new THREE.Vector3()
-    if (this.raycaster.ray.intersectPlane(this.dragPlane, target)) {
-      this.selectedMesh.position.copy(target)
+    // Collect all bone meshes from characters
+    const allMeshes = this.characters.flatMap(c => c.getAllBoneMeshes())
+    const intersects = this.raycaster.intersectObjects(allMeshes, false)
 
-      // Notify about keypoint change
-      if (this.onKeypointDrag) {
-        this.onKeypointDrag(
-          this.selectedMesh.userData.characterId,
-          this.selectedMesh.userData.part,
-          this.selectedMesh.userData.index,
-          target.clone(),
-        )
+    if (intersects.length > 0) {
+      const hitMesh = intersects[0].object
+      const charId = hitMesh.userData.characterId
+      const boneId = hitMesh.userData.boneId
+      const char = this.characters.find(c => c.id === charId)
+      if (!char) return
+
+      const bone = char.getBoneById(boneId)
+      if (!bone) return
+
+      this.selectedBone = bone
+      this.selectedCharacter = char
+
+      if (this._moveMode) {
+        // In move mode: attach to bone group root to translate whole character,
+        // or to the bone itself if it's the root
+        const isRoot = bone.parent === null
+        if (isRoot) {
+          this.transformControls.setMode('translate')
+          this.transformControls.setSpace('world')
+          this.transformControls.attach(char.boneGroup)
+        } else {
+          // Move mode on non-root: translate the whole character
+          this.transformControls.setMode('translate')
+          this.transformControls.setSpace('world')
+          this.transformControls.attach(char.boneGroup)
+        }
+      } else {
+        // Rotate mode
+        this.transformControls.setMode('rotate')
+        this.transformControls.setSpace('local')
+        this.transformControls.attach(bone.object3d)
+      }
+
+      if (this.onSelectionChange) {
+        this.onSelectionChange(char, bone)
+      }
+    } else {
+      // Click on empty space — deselect
+      this.transformControls.detach()
+      this.selectedBone = null
+      this.selectedCharacter = null
+      if (this.onSelectionChange) {
+        this.onSelectionChange(null, null)
       }
     }
   }
 
-  _onPointerUp() {
-    this.isDragging = false
-    this.selectedMesh = null
-    this.orbitControls.enabled = true
+  setMoveMode(enabled) {
+    this._moveMode = enabled
+
+    if (this.selectedBone && this.selectedCharacter) {
+      if (enabled) {
+        this.transformControls.setMode('translate')
+        this.transformControls.setSpace('world')
+        this.transformControls.attach(this.selectedCharacter.boneGroup)
+      } else {
+        this.transformControls.setMode('rotate')
+        this.transformControls.setSpace('local')
+        this.transformControls.attach(this.selectedBone.object3d)
+      }
+    }
+
+    if (this.onModeChange) {
+      this.onModeChange(enabled ? 'translate' : 'rotate')
+    }
+  }
+
+  get moveMode() {
+    return this._moveMode
+  }
+
+  _syncAfterTransform() {
+    // After any transform operation, sync all character keypoint positions from bones
+    this.characters.forEach(char => {
+      if (char.syncKeypointsFromBones) {
+        char.syncKeypointsFromBones()
+      }
+    })
+
+    // Notify about changes
+    if (this.onKeypointDrag) {
+      this.onKeypointDrag()
+    }
   }
 
   addCharacter(character) {
@@ -156,6 +249,12 @@ export class Scene3D {
   }
 
   removeCharacter(character) {
+    // Detach if selected character is being removed
+    if (this.selectedCharacter === character) {
+      this.transformControls.detach()
+      this.selectedBone = null
+      this.selectedCharacter = null
+    }
     const idx = this.characters.indexOf(character)
     if (idx >= 0) {
       this.characters.splice(idx, 1)
@@ -182,6 +281,24 @@ export class Scene3D {
     this.gridHelper.visible = visible
   }
 
+  getCameraState() {
+    return {
+      position: this.camera.position.toArray(),
+      target: this.orbitControls.target.toArray(),
+      fov: this.camera.fov,
+    }
+  }
+
+  setCameraState(state) {
+    if (!state) return
+    if (state.position) this.camera.position.fromArray(state.position)
+    if (state.target) this.orbitControls.target.fromArray(state.target)
+    if (state.fov) {
+      this.camera.fov = state.fov
+      this.camera.updateProjectionMatrix()
+    }
+  }
+
   _animate() {
     this._animFrameId = requestAnimationFrame(() => this._animate())
     this.orbitControls.update()
@@ -196,7 +313,6 @@ export class Scene3D {
 
   /**
    * Render current view to a PNG data URL for ControlNet export.
-   * Width and height default to standard ControlNet resolution.
    */
   renderToDataURL(width = 512, height = 768) {
     const offscreenRenderer = new THREE.WebGLRenderer({ antialias: true, alpha: false })

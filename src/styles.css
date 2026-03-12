@@ -111,6 +111,29 @@ button:active { background: var(--accent); color: #fff; }
   pointer-events: none;
 }
 
+/* ── Mode indicator ────────────────────────────────────────────────────────── */
+.mode-indicator {
+  position: absolute;
+  top: 8px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: rgba(85, 119, 255, 0.25);
+  color: var(--accent-h);
+  font-size: 12px;
+  font-weight: 600;
+  padding: 4px 14px;
+  border-radius: 20px;
+  border: 1px solid rgba(85, 119, 255, 0.4);
+  pointer-events: none;
+  transition: background 0.2s, color 0.2s, border-color 0.2s;
+  z-index: 10;
+}
+.mode-indicator.move-mode {
+  background: rgba(68, 255, 136, 0.25);
+  color: var(--success);
+  border-color: rgba(68, 255, 136, 0.4);
+}
+
 /* ── Sidebar ───────────────────────────────────────────────────────────────── */
 .sidebar {
   width: 300px;
@@ -272,6 +295,86 @@ button:active { background: var(--accent); color: #fff; }
   border-radius: 4px;
   padding: 2px 4px;
   font-size: 12px;
+}
+
+/* ── Help modal ─────────────────────────────────────────────────────────────── */
+.help-overlay {
+  display: none;
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.6);
+  z-index: 1000;
+  justify-content: center;
+  align-items: center;
+}
+.help-overlay.visible { display: flex; }
+
+.help-modal {
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  width: 520px;
+  max-width: 90vw;
+  max-height: 80vh;
+  display: flex;
+  flex-direction: column;
+  box-shadow: 0 8px 32px rgba(0,0,0,0.5);
+}
+
+.help-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 14px 18px 10px;
+  border-bottom: 1px solid var(--border);
+}
+.help-header h2 {
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--accent-h);
+  margin: 0;
+}
+.help-close {
+  background: transparent;
+  border: none;
+  color: var(--text-dim);
+  font-size: 18px;
+  cursor: pointer;
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+.help-close:hover { color: var(--text); background: rgba(255,255,255,0.08); }
+
+.help-content {
+  padding: 14px 18px 18px;
+  overflow-y: auto;
+  font-size: 12.5px;
+  line-height: 1.6;
+}
+.help-content h4 {
+  margin: 12px 0 6px;
+  font-size: 13px;
+  color: var(--accent-h);
+}
+.help-content h4:first-child { margin-top: 0; }
+.help-content ul {
+  list-style: none;
+  padding: 0;
+}
+.help-content li {
+  padding: 2px 0 2px 16px;
+  position: relative;
+  color: var(--text);
+}
+.help-content li::before {
+  content: '›';
+  position: absolute;
+  left: 2px;
+  color: var(--text-dim);
+}
+.help-content b {
+  color: var(--accent-h);
+  font-weight: 600;
 }
 
 /* ── Scrollbar ─────────────────────────────────────────────────────────────── */

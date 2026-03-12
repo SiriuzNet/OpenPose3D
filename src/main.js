@@ -72,6 +72,7 @@ class App {
             <input type="file" id="file-input-bg" accept="image/*" style="display:none">
             <button id="btn-load-bg" title="Load background image">🖼 Background</button>
             <button id="btn-clear-bg" title="Clear background">✕ Clear BG</button>
+            <button id="btn-help" title="Help &amp; shortcuts" style="color:#aabbff;border-color:#334477;">❓ Help</button>
           </div>
           <div class="toolbar-right">
             <label>Output:
@@ -87,7 +88,8 @@ class App {
           <!-- Left: 3D viewport -->
           <div class="viewport-container" id="viewport-container">
             <canvas id="canvas3d"></canvas>
-            <div class="viewport-hint">Drag keypoints · Orbit: left-drag · Pan: right-drag · Zoom: scroll</div>
+            <div class="mode-indicator" id="mode-indicator">🔄 Rotate Mode</div>
+            <div class="viewport-hint">Click joint to rotate · Hold X to move · Orbit: right-drag · Zoom: scroll</div>
           </div>
 
           <!-- Right: Settings + preview -->
@@ -187,6 +189,52 @@ class App {
           </div>
         </div>
       </div>
+
+      <!-- Help modal -->
+      <div class="help-overlay" id="help-overlay">
+        <div class="help-modal">
+          <div class="help-header">
+            <h2>OpenPose3D — Help</h2>
+            <button id="btn-help-close" class="help-close">✕</button>
+          </div>
+          <div class="help-content">
+            <h4>🎯 Joint Manipulation</h4>
+            <ul>
+              <li><b>Click a joint</b> — select it and show the rotation gizmo</li>
+              <li><b>Drag colored circles</b> (red/green/blue) — rotate the joint around that axis</li>
+              <li>Rotating a parent joint (e.g. shoulder) moves all children (elbow, wrist, hand)</li>
+              <li>Face, hands and feet follow their parent body bones automatically</li>
+            </ul>
+            <h4>✥ Moving the Whole Character</h4>
+            <ul>
+              <li><b>Hold X</b> — switch to Move mode (translate the whole character)</li>
+              <li><b>Release X</b> — return to Rotate mode</li>
+            </ul>
+            <h4>📷 Camera Controls</h4>
+            <ul>
+              <li><b>Left-click drag</b> (on empty space) — orbit camera</li>
+              <li><b>Right-click drag</b> — pan camera</li>
+              <li><b>Scroll wheel</b> — zoom in/out</li>
+            </ul>
+            <h4>⌨️ Keyboard Shortcuts</h4>
+            <ul>
+              <li><b>X</b> (hold) — Move mode</li>
+              <li><b>Ctrl+N</b> — Add character</li>
+              <li><b>Ctrl+S</b> — Save JSON</li>
+              <li><b>Ctrl+E</b> — Export PNG</li>
+              <li><b>Ctrl+Z</b> — Reset pose</li>
+              <li><b>Delete</b> — Remove selected character</li>
+            </ul>
+            <h4>🖼 Other</h4>
+            <ul>
+              <li>Use <b>2D Preview</b> to see the ControlNet output in real-time</li>
+              <li><b>Export PNG</b> renders the pose at the configured output resolution</li>
+              <li><b>Save/Load JSON</b> to persist and restore scenes</li>
+              <li>Toggle <b>Body / Face / Hands</b> visibility per character</li>
+            </ul>
+          </div>
+        </div>
+      </div>
     `
   }
 
@@ -194,9 +242,22 @@ class App {
 
   _initScene() {
     const canvas3d = document.getElementById('canvas3d')
-    this.scene3d = new Scene3D(canvas3d, (charId, part, index, pos) => {
-      this._onKeypointDrag(charId, part, index, pos)
+    this.scene3d = new Scene3D(canvas3d, () => {
+      // Called when any keypoint changes (via transform controls)
+      this._render2D()
     })
+
+    // Mode change callback
+    this.scene3d.onModeChange = (mode) => {
+      this._updateModeIndicator(mode)
+    }
+
+    // Selection change callback
+    this.scene3d.onSelectionChange = (char, bone) => {
+      if (char) {
+        this.selectCharacter(char.id)
+      }
+    }
   }
 
   _initRenderer2D() {
@@ -218,6 +279,13 @@ class App {
     document.getElementById('btn-load-bg').addEventListener('click', () => document.getElementById('file-input-bg').click())
     document.getElementById('file-input-bg').addEventListener('change', e => this.loadBackground(e))
     document.getElementById('btn-clear-bg').addEventListener('click', () => this.clearBackground())
+
+    // Help button
+    document.getElementById('btn-help').addEventListener('click', () => this._showHelp())
+    document.getElementById('btn-help-close').addEventListener('click', () => this._hideHelp())
+    document.getElementById('help-overlay').addEventListener('click', (e) => {
+      if (e.target.id === 'help-overlay') this._hideHelp()
+    })
 
     // ComfyUI send button (only present when ?comfyui=true)
     const sendBtn = document.getElementById('btn-send-comfyui')
@@ -386,13 +454,28 @@ class App {
     this._render2D()
   }
 
-  // ─── Keypoint Drag Handler ────────────────────────────────────────────────────
+  // ─── Mode Indicator ────────────────────────────────────────────────────────
 
-  _onKeypointDrag(charId, part, index, pos) {
-    const char = this.characters.find(c => c.id === charId)
-    if (!char) return
-    char.updateKeypointPosition(part, index, pos)
-    this._render2D()
+  _updateModeIndicator(mode) {
+    const el = document.getElementById('mode-indicator')
+    if (!el) return
+    if (mode === 'translate') {
+      el.textContent = '✥ Move Mode (release X to rotate)'
+      el.classList.add('move-mode')
+    } else {
+      el.textContent = '🔄 Rotate Mode'
+      el.classList.remove('move-mode')
+    }
+  }
+
+  // ─── Help Modal ───────────────────────────────────────────────────────────────
+
+  _showHelp() {
+    document.getElementById('help-overlay').classList.add('visible')
+  }
+
+  _hideHelp() {
+    document.getElementById('help-overlay').classList.remove('visible')
   }
 
   // ─── 2D Rendering ─────────────────────────────────────────────────────────────
@@ -464,6 +547,7 @@ class App {
     const data = {
       settings: this.settings,
       characters: this.characters.map(c => c.toJSON()),
+      camera: this.scene3d.getCameraState(),
     }
     const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' })
     const link = document.createElement('a')
@@ -499,6 +583,10 @@ class App {
 
         this.selectedCharacterId = this.characters.length > 0 ? this.characters[0].id : null
         this._updateCharList()
+
+        // Restore camera state if saved
+        if (data.camera) this.scene3d.setCameraState(data.camera)
+
         this._render2D()
       } catch (err) {
         alert('Error loading JSON: ' + err.message)
@@ -580,7 +668,18 @@ class App {
   _initComfyUIBridge() {
     // Listen for incoming messages from the ComfyUI parent widget
     window.addEventListener('message', (event) => {
-      if (!event.data || event.data.type !== 'openpose3d:load') return
+      if (!event.data) return
+
+      // Node size sync: ComfyUI sends the node's width/height widget values
+      if (event.data.type === 'openpose3d:setSize') {
+        if (event.data.width) this.settings.outputWidth = event.data.width
+        if (event.data.height) this.settings.outputHeight = event.data.height
+        this._applySettingsToUI()
+        this._render2D()
+        return
+      }
+
+      if (event.data.type !== 'openpose3d:load') return
       const scene = event.data.scene
       if (!scene) return
       try {
@@ -593,6 +692,11 @@ class App {
           Object.assign(this.settings, scene.settings)
           this._applySettingsToUI()
         }
+
+        // Override output dimensions from node widgets if provided
+        if (event.data.nodeWidth) this.settings.outputWidth = event.data.nodeWidth
+        if (event.data.nodeHeight) this.settings.outputHeight = event.data.nodeHeight
+        this._applySettingsToUI()
 
         // Load characters
         if (Array.isArray(scene.characters)) {
@@ -607,6 +711,10 @@ class App {
 
         this.selectedCharacterId = this.characters.length > 0 ? this.characters[0].id : null
         this._updateCharList()
+
+        // Restore camera state from scene if available
+        if (scene.camera) this.scene3d.setCameraState(scene.camera)
+
         this._render2D()
       } catch (err) {
         console.error('OpenPose3D: error loading scene from ComfyUI', err)
@@ -621,6 +729,7 @@ class App {
     const sceneData = {
       settings: this.settings,
       characters: this.characters.map(c => c.toJSON()),
+      camera: this.scene3d.getCameraState(),
     }
 
     // Render a preview PNG at a reasonable size

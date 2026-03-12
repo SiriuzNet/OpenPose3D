@@ -119,36 +119,67 @@ def hex_to_rgb(hex_str: str) -> tuple:
     return (int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16))
 
 
-def project_point(
-    x: float, y: float, z: float,
-    width: int, height: int,
-    camera_z: float = 3.5,
-    fov_y_deg: float = 45.0,
-) -> tuple | None:
+def _build_view_projection(width, height, camera_pos, camera_target, fov_y_deg):
     """
-    Project a 3D world-space point to 2D screen coordinates.
+    Build 4×4 view-projection matrix matching a Three.js PerspectiveCamera.
 
-    Replicates Three.js PerspectiveCamera(fov=45, aspect=w/h, near=0.01, far=100)
-    at position (0, 0, camera_z) looking toward the origin along -Z.
-
-    Returns (screen_x, screen_y) or None if the point is behind the camera.
+    Supports arbitrary camera position and look-at target so that orbit /
+    pan / zoom movements in the 3D editor are faithfully reproduced.
     """
     aspect = width / height
+    pos = np.array(camera_pos, dtype=np.float64)
+    target = np.array(camera_target, dtype=np.float64)
+    up = np.array([0.0, 1.0, 0.0])
+
+    forward = target - pos
+    fwd_len = np.linalg.norm(forward)
+    if fwd_len < 1e-10:
+        forward = np.array([0.0, 0.0, -1.0])
+    else:
+        forward = forward / fwd_len
+
+    right = np.cross(forward, up)
+    right_len = np.linalg.norm(right)
+    if right_len < 1e-10:
+        # Camera looking straight up/down – pick a fallback up vector
+        up = np.array([0.0, 0.0, -1.0])
+        right = np.cross(forward, up)
+        right_len = np.linalg.norm(right)
+    right = right / right_len
+    up2 = np.cross(right, forward)
+
+    # View matrix  (world → eye)
+    view = np.eye(4, dtype=np.float64)
+    view[0, 0:3] = right
+    view[1, 0:3] = up2
+    view[2, 0:3] = -forward
+    view[0, 3] = -float(np.dot(right, pos))
+    view[1, 3] = -float(np.dot(up2, pos))
+    view[2, 3] = float(np.dot(forward, pos))
+
+    # Perspective projection matrix  (Three.js convention)
     f = 1.0 / math.tan(math.radians(fov_y_deg / 2.0))
+    near, far = 0.01, 100.0
+    proj = np.zeros((4, 4), dtype=np.float64)
+    proj[0, 0] = f / aspect
+    proj[1, 1] = f
+    proj[2, 2] = (far + near) / (near - far)
+    proj[2, 3] = (2.0 * far * near) / (near - far)
+    proj[3, 2] = -1.0
 
-    # Distance along camera view axis (positive = in front of camera)
-    view_z = camera_z - z
-    if view_z <= 0.001:
-        return None  # Behind camera
+    return proj @ view
 
-    # Normalized Device Coordinates (NDC)
-    ndc_x = (f / aspect) * x / view_z
-    ndc_y = f * y / view_z
 
-    # NDC → screen pixels (Y is flipped: NDC +1 = top = screen y=0)
+def _project_point(x, y, z, vp, width, height):
+    """Project a 3D world-space point using a precomputed VP matrix."""
+    clip = vp @ np.array([x, y, z, 1.0], dtype=np.float64)
+    w = clip[3]
+    if w <= 1e-6:
+        return None
+    ndc_x = clip[0] / w
+    ndc_y = clip[1] / w
     screen_x = (ndc_x + 1.0) * 0.5 * width
     screen_y = (-ndc_y + 1.0) * 0.5 * height
-
     return (screen_x, screen_y)
 
 
@@ -193,6 +224,19 @@ def render_scene(
     characters = scene.get("characters", [])
     settings = scene.get("settings", {})
 
+    # Extract camera state (saved by the 3D editor) or fall back to defaults
+    camera_data = scene.get("camera")
+    if camera_data:
+        cam_pos    = camera_data.get("position", [0, 0, camera_z])
+        cam_target = camera_data.get("target",   [0, 0, 0])
+        cam_fov    = camera_data.get("fov",       fov)
+    else:
+        cam_pos    = [0, 0, camera_z]
+        cam_target = [0, 0, 0]
+        cam_fov    = fov
+
+    vp = _build_view_projection(width, height, cam_pos, cam_target, cam_fov)
+
     # Settings → colors and sizes
     bg_color    = hex_to_rgb(settings.get("backgroundColor", "#000000"))
     body_color  = hex_to_rgb(settings.get("bodyColor",  "#ff6644"))
@@ -215,11 +259,11 @@ def render_scene(
     draw = ImageDraw.Draw(img)
 
     def project(kp, offset):
-        return project_point(
+        return _project_point(
             kp[0] + offset[0],
             kp[1] + offset[1],
             kp[2] + offset[2],
-            width, height, camera_z, fov,
+            vp, width, height,
         )
 
     def draw_skeleton(keypoints, connections, colors, offset, radius, lw):
@@ -296,6 +340,8 @@ def render_mask_single(
     include_face: bool = True,
     include_hands: bool = True,
     blur_radius: float = 0.0,
+    camera_pos=None,
+    camera_target=None,
 ) -> np.ndarray:
     """
     Render a single character's skeleton as a white silhouette mask on a black canvas.
@@ -318,15 +364,20 @@ def render_mask_single(
     body_fmt = character.get("bodyFormat", "BODY_25")
     kpts     = character.get("keypoints", {})
 
+    # Build projection using editor camera state if available
+    _cam_pos    = camera_pos    if camera_pos    is not None else [0, 0, camera_z]
+    _cam_target = camera_target if camera_target is not None else [0, 0, 0]
+    vp = _build_view_projection(width, height, _cam_pos, _cam_target, fov)
+
     lw = max(1, mask_width)
     r  = max(1, lw // 2)
 
     def proj(kp):
-        return project_point(
+        return _project_point(
             kp[0] + offset[0],
             kp[1] + offset[1],
             kp[2] + offset[2],
-            width, height, camera_z, fov,
+            vp, width, height,
         )
 
     def draw_thick_skeleton(keypoints, connections):
