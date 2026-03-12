@@ -239,17 +239,36 @@ class OpenPose3DMaskAdapter:
             },
             "optional": {
                 "freefuse_data": ("FREEFUSE_DATA",),
+                "combined_mask": ("MASK", {
+                    "tooltip": (
+                        "Combined character mask from the OpenPose3D Editor. "
+                        "When provided together with enable_background=True, the inverse "
+                        "of this mask is injected as '__background__' in the mask bank. "
+                        "If not connected, background injection is skipped silently."
+                    ),
+                }),
+                "enable_background": ("BOOLEAN", {
+                    "default": True,
+                    "tooltip": (
+                        "When enabled, the background region (inverse of combined_mask) "
+                        "is added to the mask bank as '__background__' and "
+                        "freefuse_data.settings['enable_background'] is set to True. "
+                        "Requires combined_mask to be connected."
+                    ),
+                }),
             },
         }
 
-    RETURN_TYPES  = ("FREEFUSE_MASKS",)
-    RETURN_NAMES  = ("mask_bank",)
+    RETURN_TYPES  = ("FREEFUSE_MASKS", "FREEFUSE_DATA")
+    RETURN_NAMES  = ("mask_bank", "freefuse_data")
     FUNCTION      = "inject_pose_masks"
     CATEGORY      = "OpenPose3D"
     DESCRIPTION   = (
         "Injects per-character OpenPose3D pose masks into a FreeFuse mask bank.\n"
         "• Connect mask_collection (OpenPose3D Editor) → pose_masks.\n"
         "• Connect FREEFUSE_MASKS from your FreeFuse pipeline → mask_bank.\n"
+        "• Connect combined_mask (OpenPose3D Editor) and enable enable_background\n"
+        "  to automatically inject the background layer into freefuse_data.\n"
         "• Adapter slots are matched by name first, then by position.\n"
         "• Must be a separate node from the editor to avoid graph cycles."
     )
@@ -343,17 +362,16 @@ class OpenPose3DMaskAdapter:
         mask_bank,
         pose_masks,
         freefuse_data=None,
+        combined_mask=None,
+        enable_background: bool = True,
     ):
         # Graceful fallbacks for unexpected input types
         if not isinstance(mask_bank, dict):
             mask_bank = {"masks": {}}
         if not isinstance(pose_masks, dict):
-            return (mask_bank,)
+            pose_masks = {"masks": {}}
 
         pose_dict: Dict[str, torch.Tensor] = pose_masks.get("masks") or {}
-        if not pose_dict:
-            return (mask_bank,)
-
         adapter_names = self._ordered_adapter_names(mask_bank, freefuse_data)
         original_masks: Dict[str, torch.Tensor] = dict(mask_bank.get("masks") or {})
 
@@ -390,9 +408,32 @@ class OpenPose3DMaskAdapter:
                 pose_2d, original_masks.get(adapter_name)
             )
 
+        # ── Background injection ──────────────────────────────────────────────
+        background_injected = False
+        if enable_background and combined_mask is not None:
+            bg_2d = self._to_2d(combined_mask)
+            if bg_2d is not None:
+                bg_mask = torch.clamp(1.0 - bg_2d, 0.0, 1.0)
+                new_masks["__background__"] = bg_mask
+                background_injected = True
+
         new_bank = dict(mask_bank)
         new_bank["masks"] = new_masks
-        return (new_bank,)
+        out_data = self._updated_freefuse_data(freefuse_data, background_injected)
+        return (new_bank, out_data)
+
+    @staticmethod
+    def _updated_freefuse_data(
+        freefuse_data: Optional[dict],
+        enable_background: bool,
+    ) -> Optional[dict]:
+        """Return a copy of freefuse_data with enable_background applied, or None."""
+        if freefuse_data is None:
+            return None
+        data = dict(freefuse_data)
+        data["settings"] = dict(data.get("settings", {}))
+        data["settings"]["enable_background"] = enable_background
+        return data
 
 
 class OpenPose3DBackgroundMask:

@@ -132,25 +132,25 @@ class App {
 
               <label class="setting-row">
                 <span>Marker Size</span>
-                <input type="range" id="marker-size" min="0.005" max="0.08" step="0.001" value="0.025">
+                <input type="range" id="marker-size" min="0.005" max="0.2" step="0.001" value="0.025">
                 <span id="marker-size-val">0.025</span>
               </label>
 
               <label class="setting-row">
                 <span>Face Marker Size</span>
-                <input type="range" id="face-marker-size" min="0.003" max="0.05" step="0.001" value="0.012">
+                <input type="range" id="face-marker-size" min="0.003" max="0.15" step="0.001" value="0.012">
                 <span id="face-marker-size-val">0.012</span>
               </label>
 
               <label class="setting-row">
                 <span>Hand Marker Size</span>
-                <input type="range" id="hand-marker-size" min="0.003" max="0.05" step="0.001" value="0.015">
+                <input type="range" id="hand-marker-size" min="0.003" max="0.15" step="0.001" value="0.015">
                 <span id="hand-marker-size-val">0.015</span>
               </label>
 
               <label class="setting-row">
                 <span>Line Width (2D)</span>
-                <input type="range" id="line-width-2d" min="1" max="10" step="0.5" value="3">
+                <input type="range" id="line-width-2d" min="1" max="50" step="0.5" value="3">
                 <span id="line-width-2d-val">3</span>
               </label>
 
