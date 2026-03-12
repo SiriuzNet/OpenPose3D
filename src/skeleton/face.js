@@ -66,10 +66,10 @@ export function getDefaultFacePose(headCenter = [0, 0.87, 0], headScale = 0.12) 
   const pts = []
 
   // Jaw outline (0-16) - from left ear corner to chin to right ear corner
-  // Ear corners (t=±1) are at the sides; chin (t=0) hangs down below the mouth
+  // Ear corners (t=-1 and t=+1) are at the sides; chin (t=0) hangs down below the mouth
   for (let i = 0; i <= 16; i++) {
     const t = (i - 8) / 8 // -1 to 1
-    const jawDrop = 1 - t * t // 1 at chin (t=0), 0 at ear corners (t=±1)
+    const jawDrop = 1 - t * t // 1 at chin (t=0), 0 at ear corners (t=-1 and t=+1)
     pts.push([cx + s * t, cy - s * 0.22 - s * 0.62 * jawDrop, cz])
   }
 

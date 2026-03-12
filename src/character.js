@@ -178,7 +178,7 @@ export class Character {
     const nosePos = this.keypoints.body[0]
     const headCenter = [nosePos.x, nosePos.y + 0.02, nosePos.z]
 
-    const facePts = getDefaultFacePose(headCenter, 0.13)
+    const facePts = getDefaultFacePose(headCenter, 0.11)
     this.keypoints.face = facePts.map(([x, y, z]) => new THREE.Vector3(x, y, z))
 
     const rwristIdx = this.bodyFormat === 'BODY_25' ? 4 : 4
@@ -186,8 +186,8 @@ export class Character {
     const rwrist = this.keypoints.body[rwristIdx]
     const lwrist = this.keypoints.body[lwristIdx]
 
-    const rHandPts = getDefaultHandPose([rwrist.x, rwrist.y, rwrist.z], 0.16, false)
-    const lHandPts = getDefaultHandPose([lwrist.x, lwrist.y, lwrist.z], 0.16, true)
+    const rHandPts = getDefaultHandPose([rwrist.x, rwrist.y, rwrist.z], 0.12, false)
+    const lHandPts = getDefaultHandPose([lwrist.x, lwrist.y, lwrist.z], 0.12, true)
 
     this.keypoints.rightHand = rHandPts.map(([x, y, z]) => new THREE.Vector3(x, y, z))
     this.keypoints.leftHand = lHandPts.map(([x, y, z]) => new THREE.Vector3(x, y, z))

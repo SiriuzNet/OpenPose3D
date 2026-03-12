@@ -421,31 +421,23 @@ class App {
       this._rebuildCharacter(char)
     })
 
-    // Per-character scale sliders
-    this._bindRangeInput('char-scale', 'char-scale-val', v => {
-      const char = this._getSelectedCharacter()
-      if (!char) return
-      char.charScale = parseFloat(v)
-      this._rebuildCharacter(char)
-    })
-    this._bindRangeInput('hand-scale', 'hand-scale-val', v => {
-      const char = this._getSelectedCharacter()
-      if (!char) return
-      char.handScale = parseFloat(v)
-      this._rebuildCharacter(char)
-    })
-    this._bindRangeInput('face-scale', 'face-scale-val', v => {
-      const char = this._getSelectedCharacter()
-      if (!char) return
-      char.faceScale = parseFloat(v)
-      this._rebuildCharacter(char)
-    })
-    this._bindRangeInput('feet-scale', 'feet-scale-val', v => {
-      const char = this._getSelectedCharacter()
-      if (!char) return
-      char.feetScale = parseFloat(v)
-      this._rebuildCharacter(char)
-    })
+    // Per-character scale sliders (display always as float with 2 decimal places)
+    const bindScaleSlider = (inputId, valId, setter) => {
+      const input = document.getElementById(inputId)
+      const valEl = document.getElementById(valId)
+      input.addEventListener('input', e => {
+        const f = parseFloat(e.target.value)
+        if (valEl) valEl.textContent = f.toFixed(2)
+        const char = this._getSelectedCharacter()
+        if (!char) return
+        setter(char, f)
+        this._rebuildCharacter(char)
+      })
+    }
+    bindScaleSlider('char-scale', 'char-scale-val', (c, v) => { c.charScale = v })
+    bindScaleSlider('hand-scale', 'hand-scale-val', (c, v) => { c.handScale = v })
+    bindScaleSlider('face-scale', 'face-scale-val', (c, v) => { c.faceScale = v })
+    bindScaleSlider('feet-scale', 'feet-scale-val', (c, v) => { c.feetScale = v })
 
     // Continuously update 2D preview
     setInterval(() => this._render2D(), 100)
@@ -778,12 +770,13 @@ class App {
     document.getElementById('vis-face').checked = char.showFace
     document.getElementById('vis-hands').checked = char.showHands
 
-    // Scale sliders
+    // Scale sliders — display value always as float with 2 decimal places
+    const fmtScale = v => Number(v).toFixed(2)
     const setSlider = (id, valId, value) => {
       const el = document.getElementById(id)
       const valEl = document.getElementById(valId)
       if (el) el.value = value
-      if (valEl) valEl.textContent = value
+      if (valEl) valEl.textContent = fmtScale(value)
     }
     setSlider('char-scale', 'char-scale-val', char.charScale)
     setSlider('hand-scale', 'hand-scale-val', char.handScale)
