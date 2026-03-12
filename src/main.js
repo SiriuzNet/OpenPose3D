@@ -64,6 +64,7 @@ class App {
             <button id="btn-add-char" title="Add character">＋ Add Character</button>
             <button id="btn-remove-char" title="Remove selected character">✕ Remove</button>
             <button id="btn-reset-pose" title="Reset pose to default">↺ Reset Pose</button>
+            <button id="btn-toggle-mode" title="Toggle between Rotate and Move mode (X key)">🔄 Rotate</button>
             ${comfyBtn}
             <button id="btn-export-png" title="Export 2D PNG for ControlNet">⬇ Export PNG</button>
             <button id="btn-save-json" title="Save scene as JSON">💾 Save JSON</button>
@@ -89,7 +90,7 @@ class App {
           <div class="viewport-container" id="viewport-container">
             <canvas id="canvas3d"></canvas>
             <div class="mode-indicator" id="mode-indicator">🔄 Rotate Mode</div>
-            <div class="viewport-hint">Click joint to rotate · Hold X to move · Orbit: right-drag · Zoom: scroll</div>
+            <div class="viewport-hint">Click joint to rotate · X / button to move · Orbit: left-drag · Pan: right-drag · Zoom: scroll</div>
           </div>
 
           <!-- Right: Settings + preview -->
@@ -207,8 +208,9 @@ class App {
             </ul>
             <h4>✥ Moving the Whole Character</h4>
             <ul>
-              <li><b>Hold X</b> — switch to Move mode (translate the whole character)</li>
-              <li><b>Release X</b> — return to Rotate mode</li>
+              <li><b>Click the 🔄 Rotate / ✥ Move button</b> — persistently toggle between Rotate and Move mode</li>
+              <li><b>Hold X</b> — temporarily switch to Move mode while key is held</li>
+              <li><b>Release X</b> — return to the previously active mode</li>
             </ul>
             <h4>📷 Camera Controls</h4>
             <ul>
@@ -280,6 +282,11 @@ class App {
     document.getElementById('file-input-bg').addEventListener('change', e => this.loadBackground(e))
     document.getElementById('btn-clear-bg').addEventListener('click', () => this.clearBackground())
 
+    // Move / Rotate mode toggle button
+    document.getElementById('btn-toggle-mode').addEventListener('click', () => {
+      this.scene3d.togglePersistentMoveMode()
+    })
+
     // Help button
     document.getElementById('btn-help').addEventListener('click', () => this._showHelp())
     document.getElementById('btn-help-close').addEventListener('click', () => this._hideHelp())
@@ -293,12 +300,14 @@ class App {
       sendBtn.addEventListener('click', () => this._sendToComfyUI())
     }
 
-    // Output size
-    document.getElementById('out-width').addEventListener('change', e => {
-      this.settings.outputWidth = parseInt(e.target.value)
+    // Output size — use 'input' for real-time preview updates
+    document.getElementById('out-width').addEventListener('input', e => {
+      const v = parseInt(e.target.value)
+      if (v >= 64) { this.settings.outputWidth = v; this._render2D() }
     })
-    document.getElementById('out-height').addEventListener('change', e => {
-      this.settings.outputHeight = parseInt(e.target.value)
+    document.getElementById('out-height').addEventListener('input', e => {
+      const v = parseInt(e.target.value)
+      if (v >= 64) { this.settings.outputHeight = v; this._render2D() }
     })
 
     // Body format
@@ -458,13 +467,29 @@ class App {
 
   _updateModeIndicator(mode) {
     const el = document.getElementById('mode-indicator')
-    if (!el) return
+    const btn = document.getElementById('btn-toggle-mode')
     if (mode === 'translate') {
-      el.textContent = '✥ Move Mode (release X to rotate)'
-      el.classList.add('move-mode')
+      if (el) {
+        el.textContent = '✥ Move Mode (click button or release X to rotate)'
+        el.classList.add('move-mode')
+      }
+      if (btn) {
+        btn.textContent = '✥ Move'
+        btn.style.background = '#1a3a1a'
+        btn.style.color = '#44ff88'
+        btn.style.borderColor = '#225533'
+      }
     } else {
-      el.textContent = '🔄 Rotate Mode'
-      el.classList.remove('move-mode')
+      if (el) {
+        el.textContent = '🔄 Rotate Mode'
+        el.classList.remove('move-mode')
+      }
+      if (btn) {
+        btn.textContent = '🔄 Rotate'
+        btn.style.background = ''
+        btn.style.color = ''
+        btn.style.borderColor = ''
+      }
     }
   }
 
@@ -480,6 +505,20 @@ class App {
 
   // ─── 2D Rendering ─────────────────────────────────────────────────────────────
 
+  /**
+   * Return a clone of the scene camera with the aspect ratio set to match the
+   * output dimensions.  The 3D viewport camera has the viewport's aspect ratio,
+   * but the 2D ControlNet output must use the output width/height aspect so that
+   * the projection matches what the Python renderer produces.
+   */
+  _makeOutputCamera() {
+    this.scene3d.camera.updateMatrixWorld()
+    const cam = this.scene3d.camera.clone()
+    cam.aspect = this.settings.outputWidth / this.settings.outputHeight
+    cam.updateProjectionMatrix()
+    return cam
+  }
+
   _render2D() {
     const w = this.settings.outputWidth
     const h = this.settings.outputHeight
@@ -492,7 +531,7 @@ class App {
       canvas2d.height = previewH
     }
     this.renderer2d.resize(previewW, previewH)
-    this.renderer2d.render(this.characters, this.scene3d.camera, this.settings)
+    this.renderer2d.render(this.characters, this._makeOutputCamera(), this.settings)
   }
 
   // ─── Background ──────────────────────────────────────────────────────────────
@@ -527,13 +566,13 @@ class App {
     const w = this.settings.outputWidth
     const h = this.settings.outputHeight
 
-    // Render to a full-size offscreen 2D canvas
+    // Render to a full-size offscreen 2D canvas using the output-aspect camera
     const offCanvas = document.createElement('canvas')
     offCanvas.width = w
     offCanvas.height = h
     const offRenderer = new Renderer2D(offCanvas)
     offRenderer.setBackgroundColor(this.settings.backgroundColor)
-    offRenderer.render(this.characters, this.scene3d.camera, this.settings)
+    offRenderer.render(this.characters, this._makeOutputCamera(), this.settings)
 
     const link = document.createElement('a')
     link.download = `openpose3d_${w}x${h}.png`
@@ -732,7 +771,7 @@ class App {
       camera: this.scene3d.getCameraState(),
     }
 
-    // Render a preview PNG at a reasonable size
+    // Render a preview PNG at a reasonable size using the output-aspect camera
     const previewW = 256
     const previewH = Math.round(256 * this.settings.outputHeight / this.settings.outputWidth)
     const offCanvas = document.createElement('canvas')
@@ -740,7 +779,7 @@ class App {
     offCanvas.height = previewH
     const offRenderer = new Renderer2D(offCanvas)
     offRenderer.setBackgroundColor(this.settings.backgroundColor)
-    offRenderer.render(this.characters, this.scene3d.camera, this.settings)
+    offRenderer.render(this.characters, this._makeOutputCamera(), this.settings)
     const previewDataURL = offCanvas.toDataURL('image/png')
 
     window.parent.postMessage({

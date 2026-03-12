@@ -203,6 +203,8 @@ export class Character {
     }
 
     this.group.add(this.boneGroup)
+    // Update world matrices so anchor bone positions are correct for attached spheres
+    this.group.updateMatrixWorld(true)
 
     // Build face attached to Nose bone (index 0)
     if (this.showFace) {
@@ -298,6 +300,11 @@ export class Character {
   /**
    * Build keypoint spheres attached to a parent bone's Object3D.
    * Positions are stored relative to the anchor bone so they follow its transforms.
+   *
+   * Both `keypoints` and `this.keypoints.body[anchorBoneIdx]` are in group-local
+   * space, so the sphere offset = kp - anchorLocalPos (group-local subtraction).
+   * This is independent of the character's world offset and works correctly on
+   * rebuild even when the character has been moved.
    */
   _buildAttachedKeypointSpheres(part, keypoints, color, size, anchorBoneIdx) {
     this.meshes[part] = []
@@ -311,6 +318,9 @@ export class Character {
     if (!this._attachedContainers) this._attachedContainers = {}
     this._attachedContainers[part] = { container, anchorBoneIdx }
 
+    // Anchor keypoint in group-local space (same space as `keypoints` array)
+    const anchorLocalPos = (this.keypoints.body[anchorBoneIdx] || new THREE.Vector3())
+
     const geometry = new THREE.SphereGeometry(size, 8, 8)
     keypoints.forEach((kp, idx) => {
       const material = new THREE.MeshPhongMaterial({
@@ -318,13 +328,8 @@ export class Character {
         emissive: new THREE.Color(color).multiplyScalar(0.3),
       })
       const sphere = new THREE.Mesh(geometry, material)
-      // Position relative to anchor bone
-      if (anchorBone) {
-        const anchorWorld = anchorBone.getWorldPosition()
-        sphere.position.copy(kp).sub(anchorWorld)
-      } else {
-        sphere.position.copy(kp)
-      }
+      // Offset = face/hand kp relative to anchor body kp (both group-local → same coord space)
+      sphere.position.copy(kp).sub(anchorLocalPos)
       sphere.userData = { part, index: idx, characterId: this.id }
       container.add(sphere)
       this.meshes[part].push(sphere)
@@ -372,6 +377,11 @@ export class Character {
    * for 2D rendering and serialization.
    */
   syncKeypointsFromBones() {
+    // Keep offset in sync with the group's actual world position so that
+    // a subsequent buildMeshes() call restores the character to its current
+    // location (important when the user translates the whole character).
+    this.offset.copy(this.group.position)
+
     // Update matrix world
     this.boneGroup.updateMatrixWorld(true)
 
@@ -490,13 +500,13 @@ export class Character {
   }
 
   toJSON() {
-    // Sync keypoints before serializing
+    // Sync keypoints before serializing; also updates this.offset
     this.syncKeypointsFromBones()
     return {
       id: this.id,
       name: this.name,
       bodyFormat: this.bodyFormat,
-      offset: this.offset.toArray(),
+      offset: this.group.position.toArray(),
       showBody: this.showBody,
       showFace: this.showFace,
       showHands: this.showHands,
