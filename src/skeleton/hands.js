@@ -60,6 +60,16 @@ export const HAND_CONNECTION_COLORS = [
   '#ffffff', '#ffffff', '#ffffff',
 ]
 
+// Per-keypoint colors for hand joints (used to color each dot individually)
+export const HAND_KEYPOINT_COLORS = [
+  '#ffffff',  // 0  Wrist
+  '#ffff00', '#ffee00', '#ffdd00', '#ffcc00',  // 1-4  Thumb
+  '#00ff00', '#00ee00', '#00dd00', '#00cc00',  // 5-8  Index
+  '#00ffff', '#00eeff', '#00ddff', '#00ccff',  // 9-12 Middle
+  '#0066ff', '#0055ff', '#0044ff', '#0033ff',  // 13-16 Ring
+  '#ff00ff', '#ee00ff', '#dd00ff', '#cc00ff',  // 17-20 Pinky
+]
+
 /**
  * Generate default right hand pose.
  * wristPos: [x, y, z] position of wrist

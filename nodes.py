@@ -76,6 +76,15 @@ class OpenPose3DEditor:
                         "0 = hard binary edge; >0 = soft feathered edge."
                     ),
                 }),
+                "mask_occlusion": ("BOOLEAN", {
+                    "default": False,
+                    "tooltip": (
+                        "When enabled, characters that are further from the camera "
+                        "are completely occluded by characters in front of them "
+                        "(depth-based occlusion). "
+                        "When disabled, masks are blended using the union (maximum) method."
+                    ),
+                }),
             },
         }
 
@@ -101,6 +110,7 @@ class OpenPose3DEditor:
         include_face_mask:  bool  = True,
         include_hands_mask: bool  = True,
         mask_blur:          float = 0.0,
+        mask_occlusion:     bool  = False,
     ):
         """Render pose JSON → pose image + masks."""
         clean_json  = _strip_preview(pose_data)
@@ -129,17 +139,47 @@ class OpenPose3DEditor:
             per_char: dict = {}
             combined  = np.zeros((height, width), dtype=np.float32)
 
-            for i, char in enumerate(characters):
-                name     = char.get("name") or f"character_{i + 1}"
-                mask_np  = render_mask_single(
-                    char, width, height,
-                    mask_width, camera_distance, cam_fov,
-                    include_face_mask, include_hands_mask, mask_blur,
-                    camera_pos=cam_pos, camera_target=cam_target,
+            if mask_occlusion:
+                # Sort characters by distance from camera (closest first → in front)
+                cam_pos_arr = np.array(cam_pos or [0, 0, camera_distance], dtype=np.float64)
+
+                def _char_dist(char):
+                    off = char.get("offset", [0.0, 0.0, 0.0])
+                    return float(np.linalg.norm(np.array(off, dtype=np.float64) - cam_pos_arr))
+
+                sorted_chars = sorted(
+                    enumerate(characters),
+                    key=lambda x: _char_dist(x[1]),
                 )
-                # FREEFUSE_MASKS value: Tensor(H, W)
-                per_char[name] = torch.from_numpy(mask_np)
-                combined = np.maximum(combined, mask_np)
+
+                # Accumulated mask of all characters closer to the camera
+                occluder = np.zeros((height, width), dtype=np.float32)
+
+                for orig_idx, char in sorted_chars:
+                    name    = char.get("name") or f"character_{orig_idx + 1}"
+                    mask_np = render_mask_single(
+                        char, width, height,
+                        mask_width, camera_distance, cam_fov,
+                        include_face_mask, include_hands_mask, mask_blur,
+                        camera_pos=cam_pos, camera_target=cam_target,
+                    )
+                    # Hide the parts of this mask that are covered by closer characters
+                    mask_occluded = mask_np * np.clip(1.0 - occluder, 0.0, 1.0)
+                    per_char[name] = torch.from_numpy(mask_occluded)
+                    combined  = np.maximum(combined, mask_occluded)
+                    occluder  = np.maximum(occluder, mask_np)
+            else:
+                for i, char in enumerate(characters):
+                    name     = char.get("name") or f"character_{i + 1}"
+                    mask_np  = render_mask_single(
+                        char, width, height,
+                        mask_width, camera_distance, cam_fov,
+                        include_face_mask, include_hands_mask, mask_blur,
+                        camera_pos=cam_pos, camera_target=cam_target,
+                    )
+                    # FREEFUSE_MASKS value: Tensor(H, W)
+                    per_char[name] = torch.from_numpy(mask_np)
+                    combined = np.maximum(combined, mask_np)
 
             # ComfyUI MASK: Tensor(1, H, W)
             combined_mask = torch.from_numpy(combined).unsqueeze(0)
@@ -159,13 +199,14 @@ class OpenPose3DEditor:
         include_face_mask:  bool  = True,
         include_hands_mask: bool  = True,
         mask_blur:          float = 0.0,
+        mask_occlusion:     bool  = False,
         **_kwargs,
     ):
         """Hash of pose JSON + mask parameters so ComfyUI re-runs when any changes."""
         if not pose_data:
             return ""
         clean = _strip_preview(pose_data)
-        key   = f"{clean}|mw={mask_width}|f={include_face_mask}|h={include_hands_mask}|b={mask_blur}"
+        key   = f"{clean}|mw={mask_width}|f={include_face_mask}|h={include_hands_mask}|b={mask_blur}|occ={mask_occlusion}"
         return hashlib.sha256(key.encode("utf-8", errors="replace")).hexdigest()
 
 
@@ -354,6 +395,87 @@ class OpenPose3DMaskAdapter:
         return (new_bank,)
 
 
+class OpenPose3DBackgroundMask:
+    """
+    Generate a background mask (and optionally a blue-tinted background image)
+    from the combined pose mask produced by the OpenPose3D Editor.
+
+    The background mask is the logical inverse of the combined character mask:
+    pixels that do NOT belong to any character skeleton are 1.0 (white),
+    and character pixels are 0.0 (black).
+
+    When *color_blue* is enabled the node also outputs an IMAGE where the
+    background region is painted solid blue (like FreeFuse's background layer),
+    making it easy to use as a coloured matte or a blue-screen compositing layer.
+    """
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "combined_mask": ("MASK",),
+            },
+            "optional": {
+                "color_blue": ("BOOLEAN", {
+                    "default": False,
+                    "tooltip": (
+                        "When enabled, the background region is painted solid blue "
+                        "(RGB 0,0,255) in the output image, matching the FreeFuse "
+                        "background-layer convention. "
+                        "When disabled, the background image is plain white."
+                    ),
+                }),
+            },
+        }
+
+    RETURN_TYPES  = ("MASK", "IMAGE")
+    RETURN_NAMES  = ("background_mask", "background_image")
+    FUNCTION      = "generate"
+    CATEGORY      = "OpenPose3D"
+    DESCRIPTION   = (
+        "Inverts the combined pose mask to produce a background mask.\n"
+        "• background_mask  — Binary mask: 1=background, 0=characters (ComfyUI MASK)\n"
+        "• background_image — Visualisation: white background, or solid-blue when "
+        "color_blue is enabled (FreeFuse-style blue matte)"
+    )
+
+    def generate(
+        self,
+        combined_mask,
+        color_blue: bool = False,
+    ):
+        # Normalise combined_mask to a 2-D float32 [H, W] tensor.
+        # Fall back to a minimal 8×8 black tensor if the input is not a Tensor
+        # (e.g. when the node is used with a default/unconnected input).
+        if not isinstance(combined_mask, torch.Tensor):
+            combined_mask = torch.zeros(1, 8, 8)
+
+        m = combined_mask
+        if m.dim() == 3:
+            m = m[0]          # [1, H, W] → [H, W]
+        elif m.dim() == 4:
+            m = m[0, 0]       # [1, 1, H, W] → [H, W]
+
+        h, w = m.shape
+
+        # Background mask = inverse of character mask
+        bg_mask = torch.clamp(1.0 - m, 0.0, 1.0)           # [H, W]
+        bg_mask_out = bg_mask.unsqueeze(0)                   # [1, H, W]
+
+        # Background image  [1, H, W, 3]
+        img = torch.zeros(1, h, w, 3, dtype=torch.float32)
+        if color_blue:
+            # Blue channel = background region (FreeFuse style)
+            img[0, :, :, 2] = bg_mask        # R=0, G=0, B=bg
+        else:
+            # Plain white background image
+            img[0, :, :, 0] = bg_mask        # R=bg
+            img[0, :, :, 1] = bg_mask        # G=bg
+            img[0, :, :, 2] = bg_mask        # B=bg
+
+        return (bg_mask_out, img)
+
+
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 def _strip_preview(pose_data: str) -> str:
@@ -377,11 +499,13 @@ def _empty_tensor(width: int, height: int) -> torch.Tensor:
 # ── ComfyUI registration ──────────────────────────────────────────────────────
 
 NODE_CLASS_MAPPINGS = {
-    "OpenPose3DEditor":      OpenPose3DEditor,
-    "OpenPose3DMaskAdapter": OpenPose3DMaskAdapter,
+    "OpenPose3DEditor":           OpenPose3DEditor,
+    "OpenPose3DMaskAdapter":      OpenPose3DMaskAdapter,
+    "OpenPose3DBackgroundMask":   OpenPose3DBackgroundMask,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
-    "OpenPose3DEditor":      "OpenPose3D Editor",
-    "OpenPose3DMaskAdapter": "OpenPose3D Mask Adapter",
+    "OpenPose3DEditor":           "OpenPose3D Editor",
+    "OpenPose3DMaskAdapter":      "OpenPose3D Mask Adapter",
+    "OpenPose3DBackgroundMask":   "OpenPose3D Background Mask",
 }
