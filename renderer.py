@@ -257,13 +257,14 @@ def render_scene(
     marker_size      = float(settings.get("markerSize",      0.025))
     face_marker_size = float(settings.get("faceMarkerSize",  0.012))
     hand_marker_size = float(settings.get("handMarkerSize",  0.015))
-    line_width_2d    = max(1, int(settings.get("lineWidth2D", 3)))
 
-    # Scale radii relative to canvas height (matches renderer2d.js)
+    # Scale all sizes relative to canvas height so they look consistent
+    # across different output resolutions (matches renderer2d.js logic).
     scale       = height / 768.0
     body_radius = max(1, int(marker_size      * 300 * scale))
     face_radius = max(1, int(face_marker_size * 250 * scale))
     hand_radius = max(1, int(hand_marker_size * 270 * scale))
+    line_width_2d = max(1, int(settings.get("lineWidth2D", 3) * scale))
 
     # Create image
     img  = Image.new("RGB", (width, height), bg_color)
