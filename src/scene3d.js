@@ -15,6 +15,9 @@ export class Scene3D {
     this.selectedCharacter = null
 
     // Interaction mode: 'rotate' or 'translate'
+    // _persistentMoveMode = persistent toggle (button click)
+    // _moveMode           = effective mode (may be temporarily changed by X key)
+    this._persistentMoveMode = false
     this._moveMode = false
     this._isClick = false
 
@@ -118,13 +121,13 @@ export class Scene3D {
     el.addEventListener('pointermove', e => this._onPointerMove(e))
     el.addEventListener('pointerup', e => this._onPointerUp(e))
 
-    // Keyboard: X for move mode
+    // Keyboard: X for temporary move mode (reverts when released)
     document.addEventListener('keydown', e => {
       if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') return
       if (e.code === 'KeyX') this.setMoveMode(true)
     })
     document.addEventListener('keyup', e => {
-      if (e.code === 'KeyX') this.setMoveMode(false)
+      if (e.code === 'KeyX') this.setMoveMode(this._persistentMoveMode)
     })
   }
 
@@ -171,19 +174,10 @@ export class Scene3D {
       this.selectedCharacter = char
 
       if (this._moveMode) {
-        // In move mode: attach to bone group root to translate whole character,
-        // or to the bone itself if it's the root
-        const isRoot = bone.parent === null
-        if (isRoot) {
-          this.transformControls.setMode('translate')
-          this.transformControls.setSpace('world')
-          this.transformControls.attach(char.boneGroup)
-        } else {
-          // Move mode on non-root: translate the whole character
-          this.transformControls.setMode('translate')
-          this.transformControls.setSpace('world')
-          this.transformControls.attach(char.boneGroup)
-        }
+        // In move mode: translate the whole character's root group
+        this.transformControls.setMode('translate')
+        this.transformControls.setSpace('world')
+        this.transformControls.attach(char.group)
       } else {
         // Rotate mode
         this.transformControls.setMode('rotate')
@@ -212,7 +206,7 @@ export class Scene3D {
       if (enabled) {
         this.transformControls.setMode('translate')
         this.transformControls.setSpace('world')
-        this.transformControls.attach(this.selectedCharacter.boneGroup)
+        this.transformControls.attach(this.selectedCharacter.group)
       } else {
         this.transformControls.setMode('rotate')
         this.transformControls.setSpace('local')
@@ -225,8 +219,21 @@ export class Scene3D {
     }
   }
 
+  /**
+   * Toggle the persistent move mode (button click).
+   * The X key can still temporarily override.
+   */
+  togglePersistentMoveMode() {
+    this._persistentMoveMode = !this._persistentMoveMode
+    this.setMoveMode(this._persistentMoveMode)
+  }
+
   get moveMode() {
     return this._moveMode
+  }
+
+  get persistentMoveMode() {
+    return this._persistentMoveMode
   }
 
   _syncAfterTransform() {

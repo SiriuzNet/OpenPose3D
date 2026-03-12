@@ -4,9 +4,11 @@ Accepts pose JSON from the web editor widget and renders it to an IMAGE tensor.
 """
 import hashlib
 import json
+from typing import Dict, List, Optional
 
 import numpy as np
 import torch
+import torch.nn.functional as F
 
 from .renderer import render_scene, render_mask_single
 
@@ -167,6 +169,191 @@ class OpenPose3DEditor:
         return hashlib.sha256(key.encode("utf-8", errors="replace")).hexdigest()
 
 
+class OpenPose3DMaskAdapter:
+    """
+    Inject per-character OpenPose3D pose masks into a FreeFuse mask bank.
+
+    The OpenPose3D Editor outputs a ``mask_collection`` (FREEFUSE_MASKS) keyed
+    by character names (e.g. "Character 1").  FreeFuse, however, needs masks
+    keyed by **adapter names** (e.g. "subject_1") that it knows about internally.
+
+    This node acts as the bridge:
+      1. It reads the ordered adapter names from ``freefuse_data`` (preferred)
+         or from ``mask_bank.metadata.adapter_names``.
+      2. It matches each OpenPose character to a FreeFuse adapter slot by
+         *exact name* first, then *positional order* for any remaining pairs.
+      3. It replaces (or creates) each matched slot in ``mask_bank`` with the
+         corresponding pose-shaped mask, resizing if required.
+
+    Keep this as a **separate node** from the editor to avoid graph cycles in
+    ComfyUI — the editor must not depend on its own mask output.
+    """
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "mask_bank": ("FREEFUSE_MASKS",),
+                "pose_masks": ("FREEFUSE_MASKS",),
+            },
+            "optional": {
+                "freefuse_data": ("FREEFUSE_DATA",),
+            },
+        }
+
+    RETURN_TYPES  = ("FREEFUSE_MASKS",)
+    RETURN_NAMES  = ("mask_bank",)
+    FUNCTION      = "inject_pose_masks"
+    CATEGORY      = "OpenPose3D"
+    DESCRIPTION   = (
+        "Injects per-character OpenPose3D pose masks into a FreeFuse mask bank.\n"
+        "• Connect mask_collection (OpenPose3D Editor) → pose_masks.\n"
+        "• Connect FREEFUSE_MASKS from your FreeFuse pipeline → mask_bank.\n"
+        "• Adapter slots are matched by name first, then by position.\n"
+        "• Must be a separate node from the editor to avoid graph cycles."
+    )
+
+    # ── Internal helpers ──────────────────────────────────────────────────────
+
+    @staticmethod
+    def _ordered_adapter_names(
+        mask_bank: dict,
+        freefuse_data: Optional[dict],
+    ) -> List[str]:
+        """Return adapter names in the canonical FreeFuse order."""
+        names: List[str] = []
+        seen: set = set()
+
+        # Priority 1 — explicit adapter list from freefuse_data
+        if isinstance(freefuse_data, dict):
+            for adapter in freefuse_data.get("adapters", []):
+                name = adapter.get("name") if isinstance(adapter, dict) else adapter
+                if isinstance(name, str) and name not in seen:
+                    names.append(name)
+                    seen.add(name)
+
+        # Priority 2 — metadata inside the mask bank itself
+        metadata = mask_bank.get("metadata", {})
+        if isinstance(metadata, dict):
+            for name in metadata.get("adapter_names", []):
+                if isinstance(name, str) and name not in seen:
+                    names.append(name)
+                    seen.add(name)
+
+        # Priority 3 — whatever keys already exist in the bank
+        for name in (mask_bank.get("masks") or {}).keys():
+            if name not in seen:
+                names.append(name)
+                seen.add(name)
+
+        return names
+
+    @staticmethod
+    def _to_2d(t: torch.Tensor) -> Optional[torch.Tensor]:
+        """Normalise any mask tensor to a plain 2-D float32 [H, W]."""
+        if not isinstance(t, torch.Tensor):
+            return None
+        if t.dim() == 2:
+            return t.float()
+        if t.dim() == 3:
+            return t[0].float()
+        if t.dim() == 4:
+            return t[0, 0].float()
+        print(
+            f"\033[33m[OpenPose3DMaskAdapter]\033[0m Unsupported mask tensor "
+            f"with {t.dim()} dimensions — expected 2, 3, or 4."
+        )
+        return None
+
+    @staticmethod
+    def _resize_2d(src: torch.Tensor, h: int, w: int) -> torch.Tensor:
+        if src.shape[0] == h and src.shape[1] == w:
+            return src
+        return F.interpolate(
+            src.unsqueeze(0).unsqueeze(0),
+            size=(h, w),
+            mode="bilinear",
+            align_corners=False,
+        ).squeeze(0).squeeze(0)
+
+    @classmethod
+    def _format_like(
+        cls,
+        pose_2d: torch.Tensor,
+        existing: Optional[torch.Tensor],
+    ) -> torch.Tensor:
+        """Resize pose_2d to match *existing* H/W and copy its dimensionality."""
+        result = pose_2d
+        if isinstance(existing, torch.Tensor):
+            ref = cls._to_2d(existing)
+            if ref is not None:
+                result = cls._resize_2d(result, ref.shape[0], ref.shape[1])
+            result = result.to(device=existing.device, dtype=torch.float32)
+            if existing.dim() == 3:
+                return result.unsqueeze(0)
+            if existing.dim() == 4:
+                return result.unsqueeze(0).unsqueeze(0)
+        return result
+
+    # ── Main execute ──────────────────────────────────────────────────────────
+
+    def inject_pose_masks(
+        self,
+        mask_bank,
+        pose_masks,
+        freefuse_data=None,
+    ):
+        # Graceful fallbacks for unexpected input types
+        if not isinstance(mask_bank, dict):
+            mask_bank = {"masks": {}}
+        if not isinstance(pose_masks, dict):
+            return (mask_bank,)
+
+        pose_dict: Dict[str, torch.Tensor] = pose_masks.get("masks") or {}
+        if not pose_dict:
+            return (mask_bank,)
+
+        adapter_names = self._ordered_adapter_names(mask_bank, freefuse_data)
+        original_masks: Dict[str, torch.Tensor] = dict(mask_bank.get("masks") or {})
+
+        # Build ordered pose items (preserve insertion order)
+        pose_items = list(pose_dict.items())
+
+        assigned: Dict[str, torch.Tensor] = {}   # adapter_name → 2-D pose mask
+        pose_used = [False] * len(pose_items)
+
+        # ── Pass 1: exact name match (case-insensitive) ───────────────────────
+        adapter_lower = {a.lower(): a for a in adapter_names}
+        for pi, (char_name, char_tensor) in enumerate(pose_items):
+            canonical = adapter_lower.get(char_name.lower())
+            if canonical is not None and canonical not in assigned:
+                m2d = self._to_2d(char_tensor)
+                if m2d is not None:
+                    assigned[canonical] = m2d
+                    pose_used[pi] = True
+
+        # ── Pass 2: positional assignment for leftover pairs ──────────────────
+        unmatched_adapters = [a for a in adapter_names if a not in assigned]
+        unmatched_poses = [
+            (n, t) for (n, t), used in zip(pose_items, pose_used) if not used
+        ]
+        for adapter_name, (_, char_tensor) in zip(unmatched_adapters, unmatched_poses):
+            m2d = self._to_2d(char_tensor)
+            if m2d is not None:
+                assigned[adapter_name] = m2d
+
+        # ── Merge into mask bank ──────────────────────────────────────────────
+        new_masks = dict(original_masks)
+        for adapter_name, pose_2d in assigned.items():
+            new_masks[adapter_name] = self._format_like(
+                pose_2d, original_masks.get(adapter_name)
+            )
+
+        new_bank = dict(mask_bank)
+        new_bank["masks"] = new_masks
+        return (new_bank,)
+
+
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 def _strip_preview(pose_data: str) -> str:
@@ -190,9 +377,11 @@ def _empty_tensor(width: int, height: int) -> torch.Tensor:
 # ── ComfyUI registration ──────────────────────────────────────────────────────
 
 NODE_CLASS_MAPPINGS = {
-    "OpenPose3DEditor": OpenPose3DEditor,
+    "OpenPose3DEditor":      OpenPose3DEditor,
+    "OpenPose3DMaskAdapter": OpenPose3DMaskAdapter,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
-    "OpenPose3DEditor": "OpenPose3D Editor",
+    "OpenPose3DEditor":      "OpenPose3D Editor",
+    "OpenPose3DMaskAdapter": "OpenPose3D Mask Adapter",
 }

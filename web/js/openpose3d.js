@@ -272,12 +272,20 @@ app.registerExtension({
             const sceneData   = event.data.scene   ?? {};
             const previewData = event.data.preview ?? null;
 
-            // Sync editor output dimensions back to node width/height widgets
+            // Sync editor output dimensions back to node width/height widgets.
+            // Also ensure the stored scene settings match so there is only one
+            // source of truth for the output resolution.
             if (sceneData.settings) {
-              if (widthWidget && sceneData.settings.outputWidth)
-                widthWidget.value = sceneData.settings.outputWidth;
-              if (heightWidget && sceneData.settings.outputHeight)
-                heightWidget.value = sceneData.settings.outputHeight;
+              const editorW = sceneData.settings.outputWidth;
+              const editorH = sceneData.settings.outputHeight;
+              if (widthWidget  && editorW) widthWidget.value  = editorW;
+              if (heightWidget && editorH) heightWidget.value = editorH;
+            } else {
+              // No settings block – seed from node widgets so Python renderer
+              // always has the right dimensions in the scene JSON.
+              if (!sceneData.settings) sceneData.settings = {};
+              if (widthWidget)  sceneData.settings.outputWidth  = widthWidget.value  ?? 512;
+              if (heightWidget) sceneData.settings.outputHeight = heightWidget.value ?? 768;
             }
 
             // Build the pose JSON value stored in the node widget
